@@ -1,53 +1,252 @@
 /**
- * Smart GPS Live Tracking Dashboard Client
+ * Smart GPS & Wi-Fi RSSI Hybrid Live Tracking Dashboard Client
  * Real-time Hardware Telemetry & Geofence Monitor
  */
 
 (function () {
+  'use strict';
 
-        const currentPos = L.latLng(lat, lng);
+  let map = null;
+  let marker = null;
+  let accCircle = null;
+  let gfCircle = null;
+  let trail = null;
+  let trailPoints = [];
+  let anchorPos = null;
 
-        // Auto-initialize geofence center to initial GPS location if not set yet
-        if (!geofenceCenter) {
-            geofenceCenter = currentPos;
-        }
+  let espIp = localStorage.getItem('esp_ip') || '192.168.43.100';
+  let lastPacketTime = Date.now();
+  let packetCount = 0;
+  let audioCtx = null;
+  let lastAlarmBeep = 0;
 
-        // Calculate exact geodesic distance in meters
-        const distanceMeters = currentPos.distanceTo(geofenceCenter);
-        const radiusMeters = parseFloat(numGeofenceRadius.value) || 15;
-        geofenceRadius = radiusMeters;
+  function $(id) { return document.getElementById(id); }
 
-        // Render Geofence Circle on Map
-        if (!map.hasLayer(geofenceCircle)) {
-            geofenceCircle.addTo(map);
-        }
-        geofenceCircle.setLatLng(geofenceCenter);
-        geofenceCircle.setRadius(geofenceRadius);
+  // 1. Initialize Leaflet Map
+  function initMap() {
+    if (typeof L === 'undefined') return;
 
-        // Check Range Breach (Distance > Radius)
-        if (distanceMeters > geofenceRadius) {
-            isGeofenceBreached = true;
-            const breachAmount = (distanceMeters - geofenceRadius).toFixed(1);
+    // Default centered on farm location
+    const defaultCenter = [11.016842, 76.955819];
+    anchorPos = L.latLng(defaultCenter[0], defaultCenter[1]);
 
-            // Styling for Breach State (Red)
-            geofenceCircle.setStyle({
-                color: '#EF4444',
-                fillColor: '#EF4444',
-                fillOpacity: 0.35,
-                weight: 3,
-                dashArray: '4, 4'
-            });
+    map = L.map('map', { zoomControl: true }).setView(defaultCenter, 18);
+    
+    // Modern dark tile layer
+    const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      subdomains: 'abcd'
+    });
+    tileLayer.addTo(map);
 
-            elGeofenceAlertBox.className = 'geofence-alert-box breach-state';
-            elGeofenceAlertIcon.textContent = '🚨';
-            elGeofenceAlertTitle.textContent = 'OUT OF RANGE BREACH ALERT!';
-            elGeofenceAlertDesc.textContent = `BREACH DETECTED! Current Distance: ${distanceMeters.toFixed(1)} m | Allowed Radius: ${geofenceRadius.toFixed(1)} m (Exceeded by +${breachAmount} m)`;
+    tileLayer.on('tileerror', function() {
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    });
 
-            // Trigger Audio Alarm Tone
-            triggerAudioAlarm();
+    const cowIcon = L.divIcon({
+      className: '',
+      html: '<div style="position:relative;width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:#06B6D4;border:3px solid #fff;border-radius:50%;box-shadow:0 0 16px #06B6D4;font-size:14px;">🐄</div>',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14]
+    });
 
-        } else {
-            isGeofenceBreached = false;
+    marker = L.marker(defaultCenter, { icon: cowIcon }).addTo(map);
+    accCircle = L.circle(defaultCenter, { radius: 10, color: '#06B6D4', fillColor: '#06B6D4', fillOpacity: 0.15, weight: 1 }).addTo(map);
+    gfCircle = L.circle(defaultCenter, { radius: 15, color: '#10B981', fillColor: '#10B981', fillOpacity: 0.15, weight: 2, dashArray: '6,6' }).addTo(map);
+    trail = L.polyline([], { color: '#38bdf8', weight: 4, opacity: 0.8 }).addTo(map);
+
+    // Allow user to click on map to set their Farm Anchor Center
+    map.on('click', function (e) {
+      setCustomAnchor(e.latlng.lat, e.latlng.lng);
+    });
+  }
+
+  // 2. Set Custom Anchor & Sync to ESP
+  function setCustomAnchor(lat, lng) {
+    anchorPos = L.latLng(lat, lng);
+    gfCircle.setLatLng(anchorPos);
+    $('map-info').textContent = '📍 Farm Anchor Set: ' + lat.toFixed(5) + ', ' + lng.toFixed(5);
+    
+    // Notify ESP of custom anchor
+    if (espIp) {
+      const cleanIp = espIp.trim().replace(/^https?:\/\//, '');
+      fetch('http://' + cleanIp + '/api/setcenter?lat=' + lat + '&lng=' + lng, { mode: 'no-cors' }).catch(()=>{});
+    }
+  }
+
+  // 3. Audio Alarm Tone
+  function playBeep() {
+    if (!$('chk-sound').checked) return;
+    const now = Date.now();
+    if (now - lastAlarmBeep < 1200) return;
+    lastAlarmBeep = now;
+
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3);
+      gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.3);
+    } catch (e) {}
+  }
+
+  // 4. Process Telemetry Data from ESP
+  function processTelemetry(d, pingMs) {
+    lastPacketTime = Date.now();
+    packetCount++;
+    $('f-pkts').textContent = packetCount;
+    $('v-ping').textContent = pingMs + ' ms';
+
+    // Status Badges
+    $('b-esp').innerHTML = '<span class="dot dot-green"></span><span class="lbl">ESP:</span> <span class="val">ONLINE</span>';
+    
+    const lat = parseFloat(d.lat);
+    const lng = parseFloat(d.lng);
+    const dist = parseFloat(d.dist) || 0.0;
+    const allowedRadius = parseFloat($('geo-radius').value) || 15;
+
+    // Update Telemetry Cards
+    $('c-lat').textContent = lat.toFixed(6) + '°';
+    $('c-lng').textContent = lng.toFixed(6) + '°';
+    $('c-spd').textContent = d.spd;
+    $('c-alt').textContent = d.alt;
+    $('c-sat').textContent = d.sat;
+    $('c-hdop').textContent = d.hdop;
+    $('c-crs').textContent = (d.crs !== undefined ? d.crs : '0.0') + '°';
+    $('c-fix').textContent = d.fix || 'ACTIVE';
+    $('c-time').textContent = d.time;
+    $('c-date').textContent = d.date;
+
+    $('f-uart').textContent = d.uart ? ('STREAMING (' + d.chars + ' bytes)') : 'STANDBY';
+    $('f-uart').style.color = d.uart ? '#10B981' : '#F59E0B';
+    $('f-dist').textContent = dist.toFixed(1) + ' m';
+
+    $('btn-gmaps').href = 'https://www.google.com/maps?q=' + lat + ',' + lng;
+
+    // Update Map Marker & Trail
+    const curPos = [lat, lng];
+    marker.setLatLng(curPos);
+    accCircle.setLatLng(curPos);
+    accCircle.setRadius(Math.max((parseFloat(d.hdop) || 1.5) * 5, 6));
+
+    trailPoints.push(curPos);
+    if (trailPoints.length > 500) trailPoints.shift();
+    trail.setLatLngs(trailPoints);
+
+    // Geofence Evaluation
+    const rBox = $('range-box');
+    const rTitle = $('range-title');
+    const rDesc = $('range-desc');
+    const banner = $('alert-banner');
+    const bannerText = $('alert-text');
+
+    if (dist > allowedRadius) {
+      // BREACH STATE
+      $('b-gps').innerHTML = '<span class="dot dot-red"></span><span class="lbl">STATUS:</span> <span class="val" style="color:#ef4444">OUT OF RANGE</span>';
+      $('pill-signal').className = 'pill pill-gray';
+      $('pill-signal').style.background = 'rgba(239,68,68,0.2)';
+      $('pill-signal').style.color = '#ef4444';
+      $('pill-signal').textContent = 'BREACH DETECTED';
+
+      rBox.className = 'range-status breached';
+      $('range-icon').textContent = '🚨';
+      rTitle.textContent = 'BREACH DETECTED: OUT OF BOUNDS!';
+      rDesc.textContent = 'Distance to Farmer: ' + dist.toFixed(1) + 'm (Exceeded by ' + (dist - allowedRadius).toFixed(1) + 'm)';
+
+      banner.className = 'alert-banner alert-danger';
+      bannerText.innerHTML = '🚨 <b>OUT OF BOUNDS ALERT:</b> Cattle collar moved beyond ' + allowedRadius + 'm safe pasture radius!';
+
+      gfCircle.setStyle({ color: '#EF4444', fillColor: '#EF4444', fillOpacity: 0.35, weight: 3 });
+      playBeep();
+    } else {
+      // SAFE STATE
+      $('b-gps').innerHTML = '<span class="dot dot-green"></span><span class="lbl">STATUS:</span> <span class="val">SAFE (INSIDE)</span>';
+      $('pill-signal').className = 'pill pill-green';
+      $('pill-signal').textContent = 'WITHIN PERIMETER';
+
+      rBox.className = 'range-status safe';
+      $('range-icon').textContent = '🟢';
+      rTitle.textContent = 'SAFE ZONE: WITHIN PASTURE';
+      rDesc.textContent = 'Distance to Farmer: ' + dist.toFixed(1) + 'm &bull; Safe Range: ' + allowedRadius + 'm';
+
+      banner.className = 'alert-banner alert-success';
+      bannerText.innerHTML = '🟢 <b>LIVE TELEMETRY ACTIVE:</b> Collar is inside the ' + allowedRadius + 'm safe perimeter.';
+
+      gfCircle.setStyle({ color: '#10B981', fillColor: '#10B981', fillOpacity: 0.15, weight: 2 });
+    }
+  }
+
+  // 5. Poll ESP API
+  function pollEsp() {
+    if (!espIp) return;
+    const t0 = performance.now();
+    const cleanIp = espIp.trim().replace(/^https?:\/\//, '');
+    const url = 'http://' + cleanIp + '/api/gps';
+
+    fetch(url, { mode: 'cors' })
+      .then(res => res.json())
+      .then(data => {
+        const pingMs = Math.round(performance.now() - t0);
+        processTelemetry(data, pingMs);
+      })
+      .catch(err => {
+        $('b-esp').innerHTML = '<span class="dot dot-red"></span><span class="lbl">ESP:</span> <span class="val">RECONNECTING</span>';
+        $('v-ping').textContent = '-- ms';
+      });
+  }
+
+  // 6. Setup Controls
+  function initControls() {
+    $('esp-ip').value = espIp;
+
+    $('btn-connect').onclick = function () {
+      espIp = $('esp-ip').value.trim();
+      localStorage.setItem('esp_ip', espIp);
+      $('alert-text').textContent = '🔄 Connecting to ESP8266 at ' + espIp + '...';
+      pollEsp();
+    };
+
+    $('btn-set-anchor').onclick = function () {
+      if (marker && map.hasLayer(marker)) {
+        const p = marker.getLatLng();
+        setCustomAnchor(p.lat, p.lng);
+        alert('📍 Farm Anchor set to Current Location (' + p.lat.toFixed(5) + ', ' + p.lng.toFixed(5) + ')');
+      }
+    };
+
+    $('btn-recenter').onclick = function () {
+      if (marker && map.hasLayer(marker)) {
+        map.setView(marker.getLatLng(), 18, { animate: true });
+      }
+    };
+
+    $('geo-radius').oninput = function () {
+      const r = parseFloat($('geo-radius').value) || 15;
+      if (gfCircle) gfCircle.setRadius(r);
+    };
+
+    setInterval(function () {
+      const sec = ((Date.now() - lastPacketTime) / 1000).toFixed(0);
+      $('v-ago').textContent = sec + 's ago';
+    }, 1000);
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    initMap();
+    initControls();
+    pollEsp();
+    setInterval(pollEsp, 1000);
+  });
+})();
+
 
             // Styling for Safe State (Green)
             geofenceCircle.setStyle({
@@ -151,37 +350,6 @@
             case 'good':      elQualityPill.classList.add('pill-good'); break;
             case 'fair':      elQualityPill.classList.add('pill-fair'); break;
             case 'poor':      elQualityPill.classList.add('pill-poor'); break;
-            default:          elQualityPill.classList.add('pill-neutral'); break;
-        }
-    }
-
-    // --- MAP POSITION UPDATER ---
-    function updateMapPosition(lat, lng, hdop) {
-        if (!map) return;
-
-        const pos = [lat, lng];
-
-        if (!map.hasLayer(mapMarker)) {
-            mapMarker.addTo(map);
-        }
-        mapMarker.setLatLng(pos);
-
-        if (!map.hasLayer(accuracyCircle)) {
-            accuracyCircle.addTo(map);
-        }
-        
-        // Estimate accuracy radius from HDOP (HDOP * 5m approx)
-        const radius = Math.max((hdop || 2) * 5, 5);
-        accuracyCircle.setLatLng(pos);
-        accuracyCircle.setRadius(radius);
-
-        // Auto center map if user hasn't manually panned away
-        if (!userHasPannedMap) {
-            map.panTo(pos);
-        }
-    }
-
-    function removeMapMarker() {
         if (!map) return;
         if (mapMarker && map.hasLayer(mapMarker)) map.removeLayer(mapMarker);
         if (accuracyCircle && map.hasLayer(accuracyCircle)) map.removeLayer(accuracyCircle);
@@ -340,4 +508,10 @@
         }, 500);
     }
 
+    document.addEventListener('DOMContentLoaded', function () {
+        initMap();
+        initControls();
+        pollEsp();
+        setInterval(pollEsp, 1000);
+    });
 })();
