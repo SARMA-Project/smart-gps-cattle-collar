@@ -1,12 +1,10 @@
-/**
- * CattleGuard Pro - Client v3.0
+﻿/**
+ * CattleGuard Pro - Client v3.1 (Auto-Connect Edition)
  * Features:
- *  - Instant device ON/OFF detection (1.2 s timeout)
- *  - Calibrated Wi-Fi RSSI distance with exponential smoothing
- *  - Manual "Connect" button
- *  - NO fake cow movement when offline
- *  - Phone GPS as pasture anchor
- *  - Satellite map (Esri)
+ *  - Automatic endpoint polling & background IP discovery
+ *  - No manual IP input or connect button required
+ *  - Calibrated Wi-Fi RSSI distance engine
+ *  - Geofence monitoring & sound alert
  */
 
 (function () {
@@ -22,16 +20,23 @@
 
   let farmerLat = 11.016842, farmerLng = 76.955819;
   let cowLat    = 11.016842, cowLng    = 76.955819;
-  let hasPhoneGps = false;
 
-  let espIp = localStorage.getItem('esp_ip') || '192.168.43.100';
-  let lastPacketAt   = 0;
-  let isEspOnline    = false;
-  let isScanning     = false;
+  let lastPacketAt = 0;
+  let isEspOnline  = false;
+  let activeHost   = location.hostname || 'cowcollar.local';
 
-  // RSSI smoothing state (exponential moving average)
+  // Candidate hosts to try automatically
+  const candidateHosts = [
+    location.hostname,
+    'cowcollar.local',
+    '192.168.4.1',
+    '192.168.43.100',
+    '192.168.1.100',
+    '192.168.137.100'
+  ].filter(h => h && h !== 'localhost' && h !== '127.0.0.1');
+
   let smoothedDist = 0;
-  const ALPHA = 0.25; // 0=no update, 1=raw (0.25 = good balance)
+  const ALPHA = 0.25;
 
   let audioCtx = null;
   let lastBeep = 0;
@@ -68,8 +73,8 @@
 
     setTimeout(() => { if (map) map.invalidateSize(); }, 400);
 
-    // Grab phone GPS
     requestPhoneGps();
+    initAutoPoller();
   }
 
   /* ── 2. PHONE GPS ── */
@@ -80,22 +85,21 @@
       pos => {
         farmerLat = pos.coords.latitude;
         farmerLng = pos.coords.longitude;
-        hasPhoneGps = true;
         updateFarmerAnchor();
         if (!isEspOnline) {
-          // Show phone location as cow placeholder ONLY (no fake movement)
           cowLat = farmerLat; cowLng = farmerLng;
           if (cowMarker) cowMarker.setLatLng([cowLat, cowLng]);
         }
-        showCoords(farmerLat, farmerLng); // show phone coords as baseline
+        showCoords(farmerLat, farmerLng);
       },
-      err => console.warn('GPS:', err.message),
+      err => console.warn('Phone GPS:', err.message),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 
     navigator.geolocation.watchPosition(
       pos => {
-        farmerLat = pos.coords.latitude; farmerLng = pos.coords.longitude;
+        farmerLat = pos.coords.latitude;
+        farmerLng = pos.coords.longitude;
         updateFarmerAnchor();
       },
       null,
@@ -114,20 +118,7 @@
     $('val-lng').textContent = lng.toFixed(5) + '°';
   }
 
-  /* ── 3. RSSI DISTANCE (calibrated) ── */
-  /**
-   * Log-distance path loss model:
-   *   dist = 10 ^ ((txPower - rssi) / (10 * n))
-   *
-   * txPower = RSSI at 1 m (calibrate by measuring RSSI right next to router ≈ -40 dBm)
-   * n       = path-loss exponent: 2 = free space, 3 = indoor/moderate obstacles
-   *
-   * At -40 dBm (1 m): dist = 1.0 m ✓
-   * At -60 dBm:       dist ≈ 6.3 m (n=2) 
-   * At -70 dBm:       dist ≈ 20 m  (n=2)
-   *
-   * We clamp near-field: anything < 1.5 m stays at ~1 m (you're right next to phone).
-   */
+  /* ── 3. RSSI DISTANCE CALIBRATION ── */
   function rssiToDistance(rssi) {
     if (!rssi || rssi === 0 || rssi < -98) return 35.0;
     if (rssi >= -50) return 0.5;
@@ -144,7 +135,7 @@
     return smoothedDist;
   }
 
-  /* ── 4. ALARM ── */
+  /* ── 4. ALARM SOUND ── */
   function beep() {
     if (!soundOn) return;
     const now = Date.now();
@@ -171,24 +162,19 @@
 
     if (!isEspOnline) {
       isEspOnline = true;
-      setOnline();
+      setOnline(data.ip || activeHost);
     }
 
-    // ── Distance ──
     const rawDist  = parseFloat(data.dist) || rssiToDistance(parseInt(data.rssi, 10) || -70);
     const dist     = smoothDist(rawDist);
     const speed    = parseFloat(data.spd) || 0;
     const hasGps   = !!data.gpsFix && data.lat && parseFloat(data.lat) !== 0;
 
-    // ── Position ──
     if (hasGps) {
       cowLat = parseFloat(data.lat);
       cowLng = parseFloat(data.lng);
     }
-    // When GPS is offline: do NOT move the cow — just show last known position.
-    // The distance badge still updates from RSSI.
 
-    // ── Update map ──
     const cowEl = document.getElementById('marker-cow');
     if (cowEl) cowEl.classList.remove('offline-marker');
 
@@ -197,12 +183,10 @@
     if (trailHistory.length > 200) trailHistory.shift();
     if (breadcrumbTrail) breadcrumbTrail.setLatLngs(trailHistory);
 
-    // ── Stats ──
     showCoords(cowLat, cowLng);
     $('val-speed').textContent = speed.toFixed(1) + ' km/h';
     $('val-status').textContent = hasGps ? '3D GPS' : 'Wi-Fi';
 
-    // ── Geofence ──
     const maxR = parseInt($('radius-slider').value, 10) || 15;
     if (pastureCircle) pastureCircle.setRadius(maxR);
 
@@ -225,37 +209,115 @@
     }
   }
 
-  /* ── 6. ONLINE / OFFLINE UI ── */
-  function setOnline() {
+  /* ── 6. UI STATES ── */
+  function setOnline(host) {
     isEspOnline = true;
     const pill = $('device-pill');
-    pill.className = 'device-pill online';
-    $('status-text').textContent = 'ONLINE';
-    $('lbl-ip-info').textContent = 'Collar: ' + espIp;
-    const btn = $('btn-connect');
-    btn.className = 'connect-btn connected';
-    $('connect-btn-icon').textContent = '✅';
-    $('connect-btn-label').textContent = 'Connected — ' + espIp;
+    if (pill) {
+      pill.className = 'device-pill online';
+      $('status-text').textContent = 'ONLINE';
+    }
+    $('lbl-ip-info').textContent = 'Collar connected (' + (host || 'Active') + ')';
   }
 
   function setOffline() {
     isEspOnline = false;
     const pill = $('device-pill');
-    pill.className = 'device-pill offline';
-    $('status-text').textContent = 'OFFLINE';
-    $('lbl-ip-info').textContent = 'Collar not found';
-    const btn = $('btn-connect');
-    btn.className = 'connect-btn';
-    $('connect-btn-icon').textContent = '⚡';
-    $('connect-btn-label').textContent = 'Connect Collar Device';
+    if (pill) {
+      pill.className = 'device-pill offline';
+      $('status-text').textContent = 'SEARCHING';
+    }
+    $('lbl-ip-info').textContent = 'Searching for collar Wi-Fi…';
 
-    // Freeze cow: go grey but don't move
     const cowEl = document.getElementById('marker-cow');
     if (cowEl) cowEl.classList.add('offline-marker');
 
     $('val-speed').textContent = '-- km/h';
-    $('val-status').textContent = 'OFFLINE';
+    $('val-status').textContent = '--';
 
     const banner = $('geofence-banner');
-    banner.className = 'alert-card offline-state';
-    $('banner-icon').textContent = '⚠️';
+    banner.className = 'alert-card safe';
+    $('banner-icon').textContent = '🟡';
+    $('banner-title').textContent = 'SEARCHING FOR COLLAR';
+    $('banner-desc').textContent  = 'Ensure collar is powered ON or open http://192.168.4.1';
+  }
+
+  /* ── 7. AUTO-POLLING TELEMETRY ENGINE ── */
+  function fetchGpsFrom(host) {
+    const protocol = location.protocol === 'https:' ? 'http:' : location.protocol;
+    const url = (host === location.hostname) ? '/api/gps' : protocol + '//' + host + '/api/gps';
+
+    return fetch(url, { mode: 'cors', cache: 'no-store' })
+      .then(res => {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(data => {
+        activeHost = host;
+        onData(data);
+        return true;
+      });
+  }
+
+  function initAutoPoller() {
+    setInterval(() => {
+      // 1. Try primary active host
+      fetchGpsFrom(activeHost).catch(() => {
+        // 2. If primary fails, scan candidate hosts silently
+        let found = false;
+        candidateHosts.reduce((promiseChain, candidate) => {
+          return promiseChain.then(success => {
+            if (success) return true;
+            return fetchGpsFrom(candidate).then(() => true).catch(() => false);
+          });
+        }, Promise.resolve(false)).then(hasConnected => {
+          if (!hasConnected && Date.now() - lastPacketAt > 2500) {
+            setOffline();
+          }
+        });
+      });
+    }, 1000);
+  }
+
+  /* ── 8. LISTENERS ── */
+  document.addEventListener('DOMContentLoaded', () => {
+    initMap();
+
+    const slider = $('radius-slider');
+    if (slider) {
+      slider.addEventListener('input', e => {
+        $('radius-display').textContent = e.target.value + ' m';
+      });
+    }
+
+    const soundBtn = $('btn-sound-toggle');
+    if (soundBtn) {
+      soundBtn.addEventListener('click', () => {
+        soundOn = !soundOn;
+        $('sound-icon').textContent = soundOn ? '🔔' : '🔕';
+      });
+    }
+
+    const syncBtn = $('btn-sync-phone');
+    if (syncBtn) {
+      syncBtn.addEventListener('click', () => {
+        if (map) map.setView([farmerLat, farmerLng], 18);
+      });
+    }
+
+    const lockBtn = $('btn-lock-cow');
+    if (lockBtn) {
+      lockBtn.addEventListener('click', () => {
+        if (map) map.setView([cowLat, cowLng], 18);
+      });
+    }
+
+    const gmapsBtn = $('btn-gmaps');
+    if (gmapsBtn) {
+      gmapsBtn.addEventListener('click', () => {
+        window.open(`https://www.google.com/maps?q=${cowLat},${cowLng}`, '_blank');
+      });
+    }
+  });
+
+})();

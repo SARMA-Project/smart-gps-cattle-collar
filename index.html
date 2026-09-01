@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -14,7 +14,7 @@
 
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="style.css?v=3.0.0">
+  <link rel="stylesheet" href="style.css?v=3.1.0">
 </head>
 <body>
 
@@ -26,14 +26,14 @@
         <span class="app-icon">🐄</span>
         <div>
           <h1 class="app-title">CattleGuard <span class="pro-badge">PRO</span></h1>
-          <p class="app-sub" id="lbl-ip-info">Searching for collar…</p>
+          <p class="app-sub" id="lbl-ip-info">Auto-connecting to collar…</p>
         </div>
       </div>
       <div class="top-bar-right">
-        <!-- Device On/Off Pill - immediate feedback -->
+        <!-- Device On/Off Pill -->
         <div class="device-pill offline" id="device-pill">
           <span class="pulse-dot" id="pulse-dot"></span>
-          <span id="status-text">OFFLINE</span>
+          <span id="status-text">SEARCHING</span>
         </div>
         <button class="icon-btn" id="btn-sound-toggle" title="Toggle Alarm">
           <span id="sound-icon">🔔</span>
@@ -61,18 +61,12 @@
         <div class="alert-icon" id="banner-icon">🟢</div>
         <div class="alert-body">
           <strong class="alert-title" id="banner-title">SAFE IN PASTURE</strong>
-          <span class="alert-desc" id="banner-desc">Collar is within the safe zone</span>
+          <span class="alert-desc" id="banner-desc">Collar within perimeter</span>
         </div>
         <div class="alert-dist" id="badge-distance">-- m</div>
       </div>
 
-      <!-- 2. Manual Connect Button (prominent) -->
-      <button class="connect-btn" id="btn-connect">
-        <span id="connect-btn-icon">⚡</span>
-        <span id="connect-btn-label">Connect Collar Device</span>
-      </button>
-
-      <!-- 3. Stats Row -->
+      <!-- 2. Stats Row -->
       <div class="stats-row">
         <div class="stat-card">
           <span class="stat-label">LATITUDE</span>
@@ -92,20 +86,13 @@
         </div>
       </div>
 
-      <!-- 4. Boundary Slider -->
+      <!-- 3. Boundary Slider -->
       <div class="boundary-card">
         <div class="boundary-header">
-          <span>🛡️ Safe Boundary</span>
+          <span>🛡️ Safe Boundary Radius</span>
           <span class="radius-val" id="radius-display">15 m</span>
         </div>
         <input type="range" id="radius-slider" min="5" max="150" value="15" step="1" class="slider-full">
-      </div>
-
-      <!-- 5. IP Config Row -->
-      <div class="ip-row">
-        <span class="ip-label">Collar IP</span>
-        <input type="text" class="ip-input" id="ip-input" placeholder="192.168.43.100">
-        <button class="ip-set-btn" id="btn-change-ip">Connect</button>
       </div>
 
     </section>
@@ -113,6 +100,6 @@
 
   <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=3.0.0"></script>
+  <script src="app.js?v=3.1.0"></script>
 </body>
 </html>
