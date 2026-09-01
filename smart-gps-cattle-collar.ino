@@ -1,6 +1,6 @@
 ﻿/**
  * ============================================================
- *  SMART WI-FI RSSI & GPS HYBRID CATTLE COLLAR FIRMWARE
+ *  SMART WI-FI RSSI & GPS HYBRID CATTLE COLLAR FIRMWARE v4.2
  * ============================================================
  *
  *  HARDWARE:
@@ -11,19 +11,24 @@
  *  HOTSPOT CREDENTIALS:
  *    SSID : CowTracker
  *    PASS : cow12345
- *    Static IP: 192.168.43.100
  *
- *  CALIBRATION NOTES:
- *    Tuned specifically for phone hotspot RSSI propagation:
- *    - Close range (-45 to -55 dBm) -> 0.5m to 1.2m
- *    - Medium range (-56 to -75 dBm) -> 1.3m to 9.0m
- *    - Outer boundary (-76 to -83 dBm) -> 9.5m to 15.0m (Geofence threshold)
- *    - Far breach (<-84 dBm) -> 16m+
+ *  CONNECTIVITY IMPROVEMENTS (DHCP + mDNS + AP FALLBACK):
+ *    1. DHCP Enabled (No hardcoded Static IP): Connects to ANY mobile
+ *       hotspot (Android, iPhone, Samsung, Xiaomi) regardless of subnet!
+ *    2. mDNS Enabled: Access dashboard via http://cowcollar.local/
+ *    3. Dual-Mode AP Fallback: Creates AP "CowCollar-AP" (192.168.4.1)
+ *       so you can connect directly to collar Wi-Fi if hotspot is OFF!
+ *
+ *  IMPORTANT PHONE HOTSPOT NOTE:
+ *    ESP8266 requires 2.4 GHz Wi-Fi! On your phone hotspot settings,
+ *    make sure to enable "Extend Compatibility" (iPhone) or set
+ *    AP Band to "2.4 GHz" (Android).
  * ============================================================
  */
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
 #include <SoftwareSerial.h>
 #include <TinyGPSPlus.h>
 #include <math.h>
@@ -32,9 +37,9 @@
 const char* HOTSPOT_SSID = "CowTracker";
 const char* HOTSPOT_PASS = "cow12345";
 
-IPAddress STATIC_IP(192, 168, 43, 100);
-IPAddress GATEWAY  (192, 168, 43,   1);
-IPAddress SUBNET   (255, 255, 255,  0);
+// Fallback Access Point Config (Used if Hotspot is unavailable)
+const char* FALLBACK_AP_SSID = "CowCollar-AP";
+const char* FALLBACK_AP_PASS = "cow12345";
 
 // Hardware Pins
 #define GPS_RX_PIN D1
@@ -50,6 +55,7 @@ unsigned long totalChars   = 0;
 unsigned long lastDiagTime = 0;
 float smoothedDist         = 0.0f;
 float wanderAngle          = 0.0f;
+bool  isStaConnected       = false;
 
 // Pasture Center Anchor (Default: Farm Anchor)
 float baseLat = 11.016842f;
@@ -59,36 +65,28 @@ float baseLng = 76.955819f;
 float calculateCalibratedRssiDistance(int rssi) {
   if (rssi == 0 || rssi < -98) return 35.0f; // Disconnected / Lost signal
 
-  // High precision piecewise curve tuned for phone hotspot antennas
   if (rssi >= -50) {
-    // Right next to phone: 0.5m
-    return 0.5f;
+    return 0.5f; // Right next to phone (0.5m)
   } else if (rssi >= -58) {
-    // Very near (0.5m to 1.5m) — eliminates the "5m when near" bug
-    return 0.5f + (float)(-50 - rssi) * (1.0f / 8.0f);
+    return 0.5f + (float)(-50 - rssi) * (1.0f / 8.0f); // 0.5m to 1.5m
   } else if (rssi >= -68) {
-    // Near field (1.5m to 4.5m)
-    return 1.5f + (float)(-58 - rssi) * (3.0f / 10.0f);
+    return 1.5f + (float)(-58 - rssi) * (3.0f / 10.0f); // 1.5m to 4.5m
   } else if (rssi >= -78) {
-    // Medium range (4.5m to 11.0m)
-    return 4.5f + (float)(-68 - rssi) * (6.5f / 10.0f);
+    return 4.5f + (float)(-68 - rssi) * (6.5f / 10.0f); // 4.5m to 11.0m
   } else if (rssi >= -85) {
-    // Perimeter range (11.0m to 18.0m) — 15m threshold occurs at ~ -82 dBm
-    return 11.0f + (float)(-78 - rssi) * (7.0f / 7.0f);
+    return 11.0f + (float)(-78 - rssi) * (7.0f / 7.0f); // 11.0m to 18.0m (15m limit ~ -82dBm)
   } else {
-    // Breach range (> 18m)
     float d = 18.0f + (float)(-85 - rssi) * 1.2f;
     return d > 65.0f ? 65.0f : d;
   }
 }
 
-// Exponential Moving Average filter to eliminate jitter
 float getSmoothedDistance(float rawDist) {
   if (smoothedDist < 0.01f) {
     smoothedDist = rawDist;
     return rawDist;
   }
-  const float ALPHA = 0.30f; // Responsive yet stable
+  const float ALPHA = 0.30f;
   smoothedDist = ALPHA * rawDist + (1.0f - ALPHA) * smoothedDist;
   return smoothedDist;
 }
@@ -101,11 +99,11 @@ bool hasValidGpsFix() {
 
 // ── HTTP API Handler ──
 void handleApiGps() {
-  bool gpsValid   = hasValidGpsFix();
-  int rssi        = WiFi.RSSI();
-  float rawDist   = calculateCalibratedRssiDistance(rssi);
-  float dist      = getSmoothedDistance(rawDist);
-  int sats        = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+  bool gpsValid = hasValidGpsFix();
+  int rssi      = WiFi.RSSI();
+  float rawDist = calculateCalibratedRssiDistance(rssi);
+  float dist    = getSmoothedDistance(rawDist);
+  int sats      = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
 
   float outLat, outLng, outSpd, outAlt, outCrs, outHdop;
   const char* fixType;
@@ -119,11 +117,9 @@ void handleApiGps() {
     outHdop = gps.hdop.isValid() ? (float)gps.hdop.hdop() : 1.1f;
     fixType = (sats >= 4) ? "3D GPS Fix" : "2D GPS Fix";
   } else {
-    // GPS fallback mode: project relative location based on Wi-Fi distance
     wanderAngle += 0.05f;
     if (wanderAngle > 6.283f) wanderAngle = 0.0f;
 
-    // 1 meter offset ≈ 0.000009 degrees lat/lng
     float latOffset = (dist * 0.000009f) * cos(wanderAngle);
     float lngOffset = (dist * 0.000009f) * sin(wanderAngle);
 
@@ -158,13 +154,15 @@ void handleApiGps() {
     snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d", gps.date.year(), gps.date.month(), gps.date.day());
   }
 
-  char json[450];
+  String ipStr = isStaConnected ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+
+  char json[500];
   snprintf(json, sizeof(json),
-    "{\"valid\":true,\"gpsFix\":%s,\"lat\":%s,\"lng\":%s,\"spd\":%s,\"alt\":%s,\"crs\":%s,\"sat\":%d,\"hdop\":%s,\"fix\":\"%s\",\"time\":\"%s\",\"date\":\"%s\",\"chars\":%lu,\"dist\":%s,\"rssi\":%d,\"uart\":%s}",
+    "{\"valid\":true,\"gpsFix\":%s,\"lat\":%s,\"lng\":%s,\"spd\":%s,\"alt\":%s,\"crs\":%s,\"sat\":%d,\"hdop\":%s,\"fix\":\"%s\",\"time\":\"%s\",\"date\":\"%s\",\"chars\":%lu,\"dist\":%s,\"rssi\":%d,\"ip\":\"%s\",\"uart\":%s}",
     gpsValid ? "true" : "false",
     latStr, lngStr, spdStr, altStr, crsStr,
     sats, hdopStr, fixType, timeStr, dateStr,
-    totalChars, distStr, rssi,
+    totalChars, distStr, rssi, ipStr.c_str(),
     (totalChars > 0) ? "true" : "false"
   );
 
@@ -203,30 +201,50 @@ void setup() {
   delay(500);
 
   Serial.println("\n========================================================");
-  Serial.println("   🐄 SMART CATTLE COLLAR FIRMWARE (CALIBRATED)");
+  Serial.println("   🐄 SMART CATTLE COLLAR FIRMWARE v4.2 (DHCP + AP)");
   Serial.println("========================================================");
 
+  // 1. Initialize GPS UART
   gpsSerial.begin(GPS_BAUD);
   Serial.printf("1. GPS SoftwareSerial: RX=Pin D1 (GPIO5) @ %d baud\n", GPS_BAUD);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.config(STATIC_IP, GATEWAY, SUBNET, GATEWAY);
+  // 2. Configure Wi-Fi Dual Mode (Station + Access Point Fallback)
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(FALLBACK_AP_SSID, FALLBACK_AP_PASS);
+  Serial.printf("2. Fallback Access Point Started: [%s] (IP: 192.168.4.1)\n", FALLBACK_AP_SSID);
+
+  // Connect to Phone Hotspot using DHCP (Dynamic IP)
+  Serial.printf("3. Connecting to Mobile Hotspot [%s] via DHCP...\n", HOTSPOT_SSID);
   WiFi.begin(HOTSPOT_SSID, HOTSPOT_PASS);
 
-  Serial.printf("2. Connecting to Phone Hotspot [%s]...\n", HOTSPOT_SSID);
   unsigned long startT = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startT < 8000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - startT < 7000) {
     delay(300);
     Serial.print(".");
   }
   Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("   ✅ CONNECTED! Static IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    isStaConnected = true;
+    Serial.println("   ✅ HOTSPOT CONNECTED!");
+    Serial.printf("   📍 Assigned IP Address : %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("   📶 Signal Strength    : %d dBm\n", WiFi.RSSI());
+    Serial.println("   🌐 Local mDNS Domain   : http://cowcollar.local/");
   } else {
-    Serial.println("   ⚠️ Hotspot connection pending in background...");
+    isStaConnected = false;
+    Serial.println("   ⚠️ Mobile Hotspot connection timed out.");
+    Serial.println("   👉 Connect your phone directly to collar Wi-Fi:");
+    Serial.printf("      SSID : %s | Password: %s\n", FALLBACK_AP_SSID, FALLBACK_AP_PASS);
+    Serial.println("      Dashboard URL: http://192.168.4.1/");
+    Serial.println("   🔄 Collar will keep retrying Hotspot in background...");
   }
 
+  // 3. Start mDNS Responder
+  if (MDNS.begin("cowcollar")) {
+    Serial.println("   ✅ mDNS Responder Started: cowcollar.local");
+  }
+
+  // 4. Start HTTP Telemetry Server
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/gps", HTTP_GET, handleApiGps);
   server.on("/api/gps", HTTP_OPTIONS, handleOptions);
@@ -234,19 +252,30 @@ void setup() {
   server.on("/api/setcenter", HTTP_OPTIONS, handleOptions);
   server.begin();
 
-  Serial.println("3. Telemetry Server running on port 80.\n");
+  Serial.println("4. Telemetry Server active on port 80.\n");
   Serial.println("========================================================");
 }
 
 void loop() {
+  // Feed GPS serial bytes
   while (gpsSerial.available() > 0) {
     char c = (char)gpsSerial.read();
     gps.encode(c);
     totalChars++;
   }
 
+  // Maintain mDNS and HTTP server
+  MDNS.update();
   server.handleClient();
 
+  // Check STA connection status continuously
+  if (WiFi.status() == WL_CONNECTED) {
+    isStaConnected = true;
+  } else {
+    isStaConnected = false;
+  }
+
+  // Live Serial Monitor Diagnostic
   unsigned long now = millis();
   if (now - lastDiagTime >= 2500) {
     lastDiagTime = now;
@@ -256,8 +285,14 @@ void loop() {
     bool gpsValid = hasValidGpsFix();
 
     Serial.println("-------------------- [COLLAR TELEMETRY] --------------------");
-    Serial.printf("📶 Wi-Fi Distance Estimate : %.1f meters (RSSI: %d dBm)\n", dist, rssi);
-    Serial.printf("🛰️ GPS Hardware Stream     : %s | Bytes: %lu | Sats: %d\n",
+    if (isStaConnected) {
+      Serial.printf("📶 Hotspot Wi-Fi : CONNECTED | IP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), rssi);
+      Serial.printf("📏 Distance Est : %.1f meters\n", dist);
+    } else {
+      Serial.println("📶 Hotspot Wi-Fi : DISCONNECTED | Active Fallback AP: 192.168.4.1");
+    }
+
+    Serial.printf("🛰️ GPS Hardware  : %s | Bytes: %lu | Sats: %d\n",
                   gpsValid ? "3D FIX" : (totalChars > 0 ? "SEARCHING" : "NO SERIAL DATA"),
                   totalChars,
                   gps.satellites.isValid() ? gps.satellites.value() : 0);
