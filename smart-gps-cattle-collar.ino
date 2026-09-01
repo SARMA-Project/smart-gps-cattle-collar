@@ -143,6 +143,12 @@ void handleOptions() {
   server.send(204);
 }
 
+void handleRoot() {
+  // Direct client page loaded over HTTP (Zero Mixed Content blocks)
+  String html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0,user-scalable=no'><title>CattleGuard Pro</title><link rel='stylesheet' href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'/><style>body{margin:0;background:#090d16;color:#fff;font-family:sans-serif;height:100vh;display:flex;flex-direction:column}#map{flex:1}.panel{background:#111827;padding:12px;display:flex;justify-content:space-between;align-items:center}.btn{background:#06b6d4;color:#000;padding:8px 14px;border:none;border-radius:6px;font-weight:700}.badge{padding:4px 8px;border-radius:12px;background:#10b981;color:#fff;font-size:12px;font-weight:700}</style></head><body><div class='panel'><div><b>🐄 CattleGuard PRO (Direct Mode)</b><br><span id='pos'>Lat: -- | Lng: --</span></div><div class='badge' id='status'>LIVE</div></div><div id='map'></div><script src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'></script><script>let map=L.map('map',{zoomControl:false}).setView([11.0168,76.9558],18);L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19}).addTo(map);let cowIcon=L.divIcon({html:'<div style=\"width:32px;height:32px;background:#06b6d4;border:3px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 0 16px #06b6d4;\">🐄</div>',iconSize:[32,32],iconAnchor:[16,16]});let marker=L.marker([11.0168,76.9558],{icon:cowIcon}).addTo(map);let gf=L.circle([11.0168,76.9558],{radius:15,color:'#10b981',fillColor:'#10b981',fillOpacity:0.2}).addTo(map);setInterval(()=>{fetch('/api/gps').then(r=>r.json()).then(d=>{let lat=parseFloat(d.lat),lng=parseFloat(d.lng),dist=parseFloat(d.dist);document.getElementById('pos').textContent='Lat: '+lat.toFixed(5)+' | Lng: '+lng.toFixed(5)+' | Dist: '+dist.toFixed(1)+'m';marker.setLatLng([lat,lng]);if(dist>15){document.getElementById('status').style.background='#ef4444';document.getElementById('status').textContent='BREACH!';gf.setStyle({color:'#ef4444',fillColor:'#ef4444'});}else{document.getElementById('status').style.background='#10b981';document.getElementById('status').textContent='SAFE';gf.setStyle({color:'#10b981',fillColor:'#10b981'});}}).catch(()=>{});},1000);</script></body></html>");
+  server.send(200, "text/html", html);
+}
+
 // ---------------- SETUP ----------------
 void setup() {
   Serial.begin(115200);
@@ -178,13 +184,14 @@ void setup() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("   ✅ HOTSPOT CONNECTED! ESP IP Address: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-    Serial.println("   👉 Open Dashboard: https://sarma-project.github.io/smart-gps-cattle-collar/");
-    Serial.println("   ✨ ZERO SETUP: Web dashboard connects to your collar automatically!");
+    Serial.println("   👉 Open Dashboard on Phone: http://" + WiFi.localIP().toString() + "/");
+    Serial.println("   👉 Or GitHub Pages: https://sarma-project.github.io/smart-gps-cattle-collar/");
   } else {
     Serial.println("   ⚠️ Hotspot connecting in background...");
   }
 
   // 3. Start Web API Server
+  server.on("/", HTTP_GET, handleRoot);
   server.on("/api/gps", HTTP_GET, handleApiGps);
   server.on("/api/gps", HTTP_OPTIONS, handleOptions);
   server.on("/api/setcenter", HTTP_GET, handleSetCenter);
@@ -195,6 +202,7 @@ void setup() {
   Serial.println("           LIVE SERIAL MONITOR DIAGNOSTIC              ");
   Serial.println("========================================================\n");
 }
+
 
 // ---------------- MAIN LOOP ----------------
 void loop() {
