@@ -184,11 +184,42 @@
     }
   }
 
-  // 5. Poll ESP API
-  function pollEsp() {
-    if (!espIp) return;
+  // 5. Auto-Discovery & Polling Engine
+  function autoDiscoverAndPoll() {
+    // 1. Try current/cached IP first
+    pollEsp(espIp, function(success) {
+      if (!success) {
+        // 2. Fast background subnet scan (192.168.43.x)
+        scanHotspotSubnet();
+      }
+    });
+  }
+
+  function scanHotspotSubnet() {
+    const candidateIps = [
+      '192.168.43.100', '192.168.43.2', '192.168.43.3', '192.168.43.4', '192.168.43.5',
+      '192.168.43.10', '192.168.43.20', '192.168.43.50', '192.168.43.150', '192.168.4.1'
+    ];
+
+    $('alert-text').textContent = '🔍 Auto-discovering Collar on Hotspot network...';
+
+    candidateIps.forEach(function(ip) {
+      fetch('http://' + ip + '/api/gps', { mode: 'cors' })
+        .then(res => res.json())
+        .then(data => {
+          espIp = ip;
+          localStorage.setItem('esp_ip', espIp);
+          $('esp-ip').value = espIp;
+          processTelemetry(data, 25);
+        })
+        .catch(()=>{});
+    });
+  }
+
+  function pollEsp(targetIp, cb) {
+    if (!targetIp) return;
     const t0 = performance.now();
-    const cleanIp = espIp.trim().replace(/^https?:\/\//, '');
+    const cleanIp = targetIp.trim().replace(/^https?:\/\//, '');
     const url = 'http://' + cleanIp + '/api/gps';
 
     fetch(url, { mode: 'cors' })
@@ -196,10 +227,12 @@
       .then(data => {
         const pingMs = Math.round(performance.now() - t0);
         processTelemetry(data, pingMs);
+        if (cb) cb(true);
       })
       .catch(err => {
-        $('b-esp').innerHTML = '<span class="dot dot-red"></span><span class="lbl">ESP:</span> <span class="val">RECONNECTING</span>';
+        $('b-esp').innerHTML = '<span class="dot dot-red"></span><span class="lbl">ESP:</span> <span class="val">SEARCHING</span>';
         $('v-ping').textContent = '-- ms';
+        if (cb) cb(false);
       });
   }
 
@@ -211,7 +244,7 @@
       espIp = $('esp-ip').value.trim();
       localStorage.setItem('esp_ip', espIp);
       $('alert-text').textContent = '🔄 Connecting to ESP8266 at ' + espIp + '...';
-      pollEsp();
+      pollEsp(espIp);
     };
 
     $('btn-set-anchor').onclick = function () {
@@ -242,10 +275,11 @@
   document.addEventListener('DOMContentLoaded', function () {
     initMap();
     initControls();
-    pollEsp();
-    setInterval(pollEsp, 1000);
+    autoDiscoverAndPoll();
+    setInterval(autoDiscoverAndPoll, 1000);
   });
 })();
+
 
 
             // Styling for Safe State (Green)

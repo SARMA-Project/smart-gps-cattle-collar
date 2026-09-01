@@ -2,14 +2,8 @@
  * ============================================================
  *  SMART GPS & WI-FI RSSI DISTANCE HYBRID COLLAR
  * ============================================================
- *  Web Dashboard is hosted at:
- *  https://sarma-project.github.io/smart-gps-cattle-collar/
- *
- *  FEATURES:
- *    1. Real GPS Satellite Tracking (NEO-6M on D1/D2).
- *    2. Wi-Fi Hotspot RSSI Distance Engine (Measures physical distance from phone).
- *    3. Hybrid Fallback: Smoothly calculates live coordinates & geofence
- *       using real Wi-Fi signal distance when indoors without GPS fix!
+ *  Web Dashboard: https://sarma-project.github.io/smart-gps-cattle-collar/
+ *  AUTO-CONNECT: Pre-configured for zero manual IP entry!
  *
  *  HARDWARE CONNECTIONS:
  *    NEO-6M VCC  --> NodeMCU 3.3V
@@ -47,10 +41,9 @@ float baseLat = 11.016842;
 float baseLng = 76.955819;
 float wanderAngle = 0.0;
 
-// Calculate distance in meters from Wi-Fi RSSI using Log-Distance Path Loss model
+// Calculate distance in meters from Wi-Fi RSSI
 float calculateRssiDistance(int rssi) {
   if (rssi == 0 || rssi < -100) return 35.0;
-  // Ref power at 1 meter = -40 dBm, Path Loss Exponent = 2.4
   float txPower = -40.0;
   float ratio = (txPower - (float)rssi) / (10.0 * 2.4);
   float dist = pow(10.0, ratio);
@@ -133,7 +126,6 @@ void handleApiGps() {
   server.send(200, "application/json", jsonBuf);
 }
 
-// Allow user to set custom Farm Anchor from web map click
 void handleSetCenter() {
   if (server.hasArg("lat") && server.hasArg("lng")) {
     baseLat = server.arg("lat").toFloat();
@@ -164,9 +156,17 @@ void setup() {
   gpsSerial.begin(GPS_BAUD);
   Serial.printf("1. GPS SoftwareSerial: RX=Pin D1 (GPIO5) @ %d baud\n", GPS_BAUD);
 
-  // 2. Connect to Wi-Fi Hotspot
+  // 2. Connect to Wi-Fi Hotspot with Preferred Static IP
   Serial.printf("2. Connecting to Phone Hotspot [%s]...\n", HOTSPOT_SSID);
   WiFi.mode(WIFI_STA);
+
+  // Pre-configure static IP 192.168.43.100 for zero-manual-entry auto connection
+  IPAddress staticIP(192, 168, 43, 100);
+  IPAddress gateway(192, 168, 43, 1);
+  IPAddress subnet(255, 255, 255, 0);
+  IPAddress dns(192, 168, 43, 1);
+  WiFi.config(staticIP, gateway, subnet, dns);
+
   WiFi.begin(HOTSPOT_SSID, HOTSPOT_PASS);
 
   unsigned long startAttempt = millis();
@@ -179,6 +179,7 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("   ✅ HOTSPOT CONNECTED! ESP IP Address: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     Serial.println("   👉 Open Dashboard: https://sarma-project.github.io/smart-gps-cattle-collar/");
+    Serial.println("   ✨ ZERO SETUP: Web dashboard connects to your collar automatically!");
   } else {
     Serial.println("   ⚠️ Hotspot connecting in background...");
   }
@@ -197,17 +198,14 @@ void setup() {
 
 // ---------------- MAIN LOOP ----------------
 void loop() {
-  // Read incoming GPS data continuously
   while (gpsSerial.available() > 0) {
     char c = (char)gpsSerial.read();
     gps.encode(c);
     totalChars++;
   }
 
-  // Handle Web Client requests
   server.handleClient();
 
-  // Print Live Status every 2.5 seconds
   unsigned long now = millis();
   if (now - lastSerialReport >= 2500) {
     lastSerialReport = now;
@@ -231,6 +229,7 @@ void loop() {
     Serial.println("------------------------------------------------------------\n");
   }
 }
+
 
 
 
