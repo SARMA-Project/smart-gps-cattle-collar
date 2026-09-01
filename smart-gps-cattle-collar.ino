@@ -4,30 +4,34 @@
  * ============================================================
  *  Target Board: NodeMCU v2 / ESP8266 (esp8266:esp8266:nodemcuv2)
  *
- *  FEATURES:
- *    - NO Phone Hotspot required! (Fixes all WPA3 / hotspot connection issues)
- *    - Captive Portal Auto-Popup: When you connect your phone to "CattleGuard-Tracker",
- *      the dashboard automatically pops up on your phone screen!
- *    - Serves the complete responsive dashboard at http://192.168.4.1/
- *    - Calibrated Wi-Fi RSSI distance math (0.5m near-field accuracy)
- *    - u-blox NEO-6M GPS parsing on pins D1/D2
+ *  HARDWARE CONNECTIONS:
+ *    NEO-6M VCC  --> NodeMCU 3.3V
+ *    NEO-6M GND  --> NodeMCU GND
+ *    NEO-6M TX   --> NodeMCU D1 (GPIO 5)
+ *    NEO-6M RX   --> NodeMCU D2 (GPIO 4)
+ *
+ *  STANDALONE DIRECT WI-FI ACCESS POINT:
+ *    Wi-Fi Name (SSID) : CattleGuard-Tracker
+ *    Password          : 12345678
+ *    Dashboard URL     : http://192.168.4.1/  or  http://cow.local/
  * ============================================================
  */
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
 #include <DNSServer.h>
 #include <SoftwareSerial.h>
 #include <TinyGPSPlus.h>
 #include <math.h>
 
 // Standalone Access Point Configuration
-const char* AP_SSID = "CattleGuard-Tracker";
-const char* AP_PASS = "12345678";
+const char *AP_SSID = "CattleGuard-Tracker";
+const char *AP_PASS = "12345678";
 
-#define GPS_RX_PIN D1   // GPIO 5 (NEO-6M TX -> D1)
-#define GPS_TX_PIN D2   // GPIO 4 (NEO-6M RX -> D2)
-#define GPS_BAUD   9600
+#define GPS_RX_PIN D1 // GPIO 5 (NEO-6M TX -> D1)
+#define GPS_TX_PIN D2 // GPIO 4 (NEO-6M RX -> D2)
+#define GPS_BAUD 9600
 
 SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
 TinyGPSPlus gps;
@@ -35,10 +39,10 @@ ESP8266WebServer server(80);
 DNSServer dnsServer;
 
 // Global Telemetry State
-unsigned long totalChars   = 0;
+unsigned long totalChars = 0;
 unsigned long lastDiagTime = 0;
-float smoothedDist         = 0.0f;
-float wanderAngle          = 0.0f;
+float smoothedDist = 0.0f;
+float wanderAngle = 0.0f;
 
 // Pasture Anchor
 float baseLat = 11.016842f;
@@ -46,24 +50,34 @@ float baseLng = 76.955819f;
 
 // ── Calibrated Distance Calculation ──
 float calculateCalibratedRssiDistance(int rssi) {
-  if (rssi == 0 || rssi < -98) return 35.0f;
-  if (rssi >= -50) return 0.5f;
-  if (rssi >= -58) return 0.5f + (float)(-50 - rssi) * (1.0f / 8.0f);
-  if (rssi >= -68) return 1.5f + (float)(-58 - rssi) * (3.0f / 10.0f);
-  if (rssi >= -78) return 4.5f + (float)(-68 - rssi) * (6.5f / 10.0f);
-  if (rssi >= -85) return 11.0f + (float)(-78 - rssi) * (7.0f / 7.0f);
+  if (rssi == 0 || rssi < -98)
+    return 35.0f;
+  if (rssi >= -50)
+    return 0.5f;
+  if (rssi >= -58)
+    return 0.5f + (float)(-50 - rssi) * (1.0f / 8.0f);
+  if (rssi >= -68)
+    return 1.5f + (float)(-58 - rssi) * (3.0f / 10.0f);
+  if (rssi >= -78)
+    return 4.5f + (float)(-68 - rssi) * (6.5f / 10.0f);
+  if (rssi >= -85)
+    return 11.0f + (float)(-78 - rssi) * (7.0f / 7.0f);
   float d = 18.0f + (float)(-85 - rssi) * 1.2f;
   return d > 65.0f ? 65.0f : d;
 }
 
 float getSmoothedDistance(float rawDist) {
-  if (smoothedDist < 0.01f) { smoothedDist = rawDist; return rawDist; }
+  if (smoothedDist < 0.01f) {
+    smoothedDist = rawDist;
+    return rawDist;
+  }
   smoothedDist = 0.30f * rawDist + 0.70f * smoothedDist;
   return smoothedDist;
 }
 
 bool hasValidGpsFix() {
-  return gps.location.isValid() && gps.location.age() < 3000 && fabs(gps.location.lat()) > 0.0001;
+  return gps.location.isValid() && gps.location.age() < 3000 &&
+         fabs(gps.location.lat()) > 0.0001;
 }
 
 void handleOptions() {
@@ -73,43 +87,61 @@ void handleOptions() {
   server.send(204);
 }
 
+void handleSetCenter() {
+  if (server.hasArg("lat") && server.hasArg("lng")) {
+    baseLat = server.arg("lat").toFloat();
+    baseLng = server.arg("lng").toFloat();
+    wanderAngle  = 0.0f;
+    smoothedDist = 0.0f;
+    Serial.printf("📍 Center anchor updated: Lat=%.6f, Lng=%.6f\n", baseLat, baseLng);
+  }
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "text/plain", "OK");
+}
+
 // ── /api/gps Telemetry Endpoint ──
 void handleApiGps() {
   bool gpsValid = hasValidGpsFix();
-  int rssi      = WiFi.RSSI();
-  if (rssi == 0) rssi = -55;
+  int rssi = WiFi.RSSI();
+  if (rssi == 0)
+    rssi = -55;
 
   float dist = getSmoothedDistance(calculateCalibratedRssiDistance(rssi));
-  int sats   = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+  int sats = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
 
   float outLat, outLng, outSpd, outAlt, outCrs, outHdop;
-  const char* fixType;
+  const char *fixType;
 
   if (gpsValid) {
-    outLat  = (float)gps.location.lat();
-    outLng  = (float)gps.location.lng();
-    outSpd  = gps.speed.isValid() ? (float)(gps.speed.knots() * 1.852) : 0.0f;
-    outAlt  = gps.altitude.isValid() ? (float)gps.altitude.meters() : 0.0f;
-    outCrs  = gps.course.isValid() ? (float)gps.course.deg() : 0.0f;
+    outLat = (float)gps.location.lat();
+    outLng = (float)gps.location.lng();
+    outSpd = gps.speed.isValid() ? (float)(gps.speed.knots() * 1.852) : 0.0f;
+    outAlt = gps.altitude.isValid() ? (float)gps.altitude.meters() : 0.0f;
+    outCrs = gps.course.isValid() ? (float)gps.course.deg() : 0.0f;
     outHdop = gps.hdop.isValid() ? (float)gps.hdop.hdop() : 1.1f;
     fixType = (sats >= 4) ? "3D GPS Fix" : "2D GPS Fix";
   } else {
     wanderAngle += 0.05f;
-    if (wanderAngle > 6.283f) wanderAngle = 0.0f;
-    outLat  = baseLat + (dist * 0.000009f) * cos(wanderAngle);
-    outLng  = baseLng + (dist * 0.000009f) * sin(wanderAngle);
-    outSpd  = (dist > 14.0f) ? (2.2f + (dist / 15.0f)) : 0.5f;
-    outAlt  = 412.0f;
-    outCrs  = wanderAngle * 180.0f / 3.14159f;
+    if (wanderAngle > 6.283f)
+      wanderAngle = 0.0f;
+    outLat = baseLat + (dist * 0.000009f) * cos(wanderAngle);
+    outLng = baseLng + (dist * 0.000009f) * sin(wanderAngle);
+    outSpd = (dist > 14.0f) ? (2.2f + (dist / 15.0f)) : 0.5f;
+    outAlt = 412.0f;
+    outCrs = wanderAngle * 180.0f / 3.14159f;
     outHdop = 1.2f;
     fixType = "Wi-Fi Hybrid Active";
   }
 
   char json[450];
   snprintf(json, sizeof(json),
-    "{\"valid\":true,\"gpsFix\":%s,\"lat\":%.6f,\"lng\":%.6f,\"spd\":%.1f,\"alt\":%.1f,\"crs\":%.1f,\"sat\":%d,\"hdop\":%.1f,\"fix\":\"%s\",\"chars\":%lu,\"dist\":%.1f,\"rssi\":%d,\"ip\":\"192.168.4.1\",\"uart\":%s}",
-    gpsValid ? "true" : "false", outLat, outLng, outSpd, outAlt, outCrs, sats, outHdop, fixType, totalChars, dist, rssi, (totalChars > 0) ? "true" : "false"
-  );
+           "{\"valid\":true,\"gpsFix\":%s,\"lat\":%.6f,\"lng\":%.6f,\"spd\":%."
+           "1f,\"alt\":%.1f,\"crs\":%.1f,\"sat\":%d,\"hdop\":%.1f,\"fix\":\"%"
+           "s\",\"chars\":%lu,\"dist\":%.1f,\"rssi\":%d,\"ip\":\"192.168.4.1\","
+           "\"uart\":%s}",
+           gpsValid ? "true" : "false", outLat, outLng, outSpd, outAlt, outCrs,
+           sats, outHdop, fixType, totalChars, dist, rssi,
+           (totalChars > 0) ? "true" : "false");
 
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", json);
@@ -267,7 +299,8 @@ void setup() {
 
   // 1. Start SoftwareSerial GPS (NodeMCU D1=RX, D2=TX)
   gpsSerial.begin(GPS_BAUD);
-  Serial.printf("1. GPS SoftwareSerial: RX=Pin D1, TX=Pin D2 @ %d baud\n", GPS_BAUD);
+  Serial.printf("1. GPS SoftwareSerial: RX=Pin D1, TX=Pin D2 @ %d baud\n",
+                GPS_BAUD);
 
   // 2. Start Wi-Fi Access Point
   WiFi.mode(WIFI_AP);
@@ -279,7 +312,7 @@ void setup() {
   Serial.printf("   🔑 Password  : %s\n", AP_PASS);
   Serial.printf("   📍 IP        : %s\n", apIP.toString().c_str());
 
-  // 3. Start Captive Portal DNS Server (Redirects all web requests to 192.168.4.1)
+  // 3. Start Captive Portal DNS Server
   dnsServer.start(53, "*", apIP);
   Serial.println("3. ✅ Captive Portal DNS Server Active!");
 
@@ -314,24 +347,30 @@ void loop() {
   if (now - lastDiagTime >= 2500) {
     lastDiagTime = now;
     int rssi = WiFi.RSSI();
-    if (rssi == 0) rssi = -55;
+    if (rssi == 0)
+      rssi = -55;
     float rawDist = calculateCalibratedRssiDistance(rssi);
     float dist = getSmoothedDistance(rawDist);
     bool gpsValid = hasValidGpsFix();
 
-    Serial.println("-------------------- [COLLAR TELEMETRY] --------------------");
+    Serial.println(
+        "-------------------- [COLLAR TELEMETRY] --------------------");
     Serial.printf("📶 Standalone Wi-Fi AP : %s | IP: 192.168.4.1\n", AP_SSID);
-    Serial.printf("📏 Distance Estimate   : %.1f meters (RSSI: %d dBm)\n", dist, rssi);
-    Serial.printf("🛰️ GPS Hardware        : %s | Chars: %lu | Sats: %d\n",
-                  gpsValid ? "3D FIX" : (totalChars > 0 ? "SEARCHING" : "NO SERIAL DATA"),
-                  totalChars,
-                  gps.satellites.isValid() ? gps.satellites.value() : 0);
+    Serial.printf("📏 Distance Estimate   : %.1f meters (RSSI: %d dBm)\n", dist,
+                  rssi);
+    Serial.printf(
+        "🛰️ GPS Hardware        : %s | Chars: %lu | Sats: %d\n",
+        gpsValid ? "3D FIX" : (totalChars > 0 ? "SEARCHING" : "NO SERIAL DATA"),
+        totalChars, gps.satellites.isValid() ? gps.satellites.value() : 0);
 
     if (dist > 15.0f) {
-      Serial.printf("🚨 [ALERT] OUT OF RANGE BREACH! Distance: %.1f m (> 15.0m)\n", dist);
+      Serial.printf(
+          "🚨 [ALERT] OUT OF RANGE BREACH! Distance: %.1f m (> 15.0m)\n", dist);
     } else {
-      Serial.printf("🟢 [SAFE] Within perimeter. Distance: %.1f m (<= 15.0m)\n", dist);
+      Serial.printf("🟢 [SAFE] Within perimeter. Distance: %.1f m (<= 15.0m)\n",
+                    dist);
     }
-    Serial.println("------------------------------------------------------------\n");
+    Serial.println(
+        "------------------------------------------------------------\n");
   }
 }
