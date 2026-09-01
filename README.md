@@ -16,6 +16,12 @@ A production-grade real-time GPS telemetry and geofencing dashboard built for **
   - Calculates real-time geodesic distance in meters from home anchor.
   - Triggers a **glowing red flashing visual alert banner** + **audio alarm tone** when device goes out of range.
   - Interactive map visualization showing green safe zone circle vs red breach zone circle.
+- 📶 **Calibrated Mobile Hotspot Wi-Fi RSSI Distance**:
+  - Precision piecewise path-loss curve tuned for mobile phone hotspots:
+    - Right next to phone (-45 to -50 dBm) $\rightarrow$ 0.5m (0–1m accuracy)
+    - Near range (-51 to -68 dBm) $\rightarrow$ 0.5m to 4.5m
+    - Boundary threshold (-79 to -85 dBm) $\rightarrow$ 11m to 18m (15m alert limit at ~ -82 dBm)
+  - Eliminates near-field 5-meter error when holding collar close to the hotspot phone.
 - 🗺️ **Interactive Leaflet Map**: Displays dark theme map tiles, live location marker, accuracy circle (HDOP based), auto-center control, and dynamic Google Maps external link button.
 - 🛣️ **Route Path Tracking**: Start/Stop/Clear path tracking polyline capped at 500 valid points to optimize ESP32 memory.
 - 📊 **9 Live Telemetry Cards**: Latitude, Longitude, Speed (converted Knots -> km/h), Altitude (m), Satellites count, HDOP, Course (°), Fix Type (3D/2D/NO FIX), and UTC Time.
