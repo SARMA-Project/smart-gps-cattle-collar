@@ -36,7 +36,6 @@
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <ArduinoJson.h>
 #include <TinyGPSPlus.h>
 
 // ============================================================
@@ -538,58 +537,68 @@ String qualStr() {
 
 String buildJson(const String& ip) {
     bool valid = (gpsState == STATE_FIXED);
-    StaticJsonDocument<512> doc;
-    doc["valid"]   = valid;
-    doc["state"]   = stateStr();
-    doc["quality"] = qualStr();
-    doc["ip"]      = ip;
-
+    char buf[512];
+    
+    char latStr[20] = "null";
+    char lngStr[20] = "null";
+    char altStr[16] = "null";
+    char spdStr[16] = "null";
+    char crsStr[16] = "null";
+    char hdopStr[16] = "99.9";
+    char fixTypeStr[20] = "NO FIX";
+    
     if (valid) {
-        doc["latitude"]  = gps.location.lat();
-        doc["longitude"] = gps.location.lng();
-        doc["altitude"]  = gps.altitude.isValid()   ? gps.altitude.meters()     : 0.0;
-        doc["speedKmh"]  = gps.speed.isValid()      ? gps.speed.knots()*1.852f  : 0.0;
-        doc["course"]    = gps.course.isValid()      ? gps.course.deg()          : 0.0;
-        doc["satellites"]= gps.satellites.isValid()  ? (int)gps.satellites.value(): 0;
-        doc["hdop"]      = gps.hdop.isValid()        ? gps.hdop.hdop()           : 99.9;
+        dtostrf(gps.location.lat(), 1, 6, latStr);
+        dtostrf(gps.location.lng(), 1, 6, lngStr);
+        if (gps.altitude.isValid()) dtostrf(gps.altitude.meters(), 1, 1, altStr);
+        if (gps.speed.isValid()) dtostrf(gps.speed.knots() * 1.852f, 1, 1, spdStr);
+        if (gps.course.isValid()) dtostrf(gps.course.deg(), 1, 1, crsStr);
+        if (gps.hdop.isValid()) dtostrf(gps.hdop.hdop(), 1, 1, hdopStr);
+        
         uint32_t sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
-        float    hdop = gps.hdop.isValid()       ? gps.hdop.hdop()        : 99.9f;
-        if      (sats >= 4 && hdop < 5.0f && gps.altitude.isValid()) doc["fixType"] = "3D";
-        else if (sats >= 3)                                            doc["fixType"] = "2D";
-        else                                                           doc["fixType"] = "FIXED";
+        float hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
+        if (sats >= 4 && hdop < 5.0f && gps.altitude.isValid()) strcpy(fixTypeStr, "3D");
+        else if (sats >= 3) strcpy(fixTypeStr, "2D");
+        else strcpy(fixTypeStr, "FIXED");
     } else {
-        doc["latitude"]  = nullptr;
-        doc["longitude"] = nullptr;
-        doc["altitude"]  = nullptr;
-        doc["speedKmh"]  = nullptr;
-        doc["course"]    = nullptr;
-        doc["satellites"]= gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
-        doc["hdop"]      = gps.hdop.isValid()       ? gps.hdop.hdop()              : 99.9;
-        doc["fixType"]   = (gpsState == STATE_SEARCHING) ? "SEARCHING" :
-                           (gpsState == STATE_FIX_LOST)  ? "FIX LOST" : "NO FIX";
+        if (gps.hdop.isValid()) dtostrf(gps.hdop.hdop(), 1, 1, hdopStr);
+        if (gpsState == STATE_SEARCHING) strcpy(fixTypeStr, "SEARCHING");
+        else if (gpsState == STATE_FIX_LOST) strcpy(fixTypeStr, "FIX LOST");
     }
-
+    
+    char timeStr[20] = "--:--:--";
     if (gps.time.isValid()) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%02d:%02d:%02d UTC",
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d UTC",
                  gps.time.hour(), gps.time.minute(), gps.time.second());
-        doc["gpsTime"] = buf;
-    } else { doc["gpsTime"] = "--:--:--"; }
-
+    }
+    
+    char dateStr[20] = "----/--/--";
     if (gps.date.isValid()) {
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
+        snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d",
                  gps.date.year(), gps.date.month(), gps.date.day());
-        doc["gpsDate"] = buf;
-    } else { doc["gpsDate"] = "----/--/--"; }
-
-    doc["charsProcessed"] = gps.charsProcessed();
-    doc["failedChecksum"] = gps.failedChecksum();
-    doc["uartActive"]     = (totalGpsChars > 0);
-
-    String out;
-    serializeJson(doc, out);
-    return out;
+    }
+    
+    int sats = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+    
+    snprintf(buf, sizeof(buf),
+      "{\"valid\":%s,\"state\":\"%s\",\"quality\":\"%s\",\"ip\":\"%s\","
+      "\"latitude\":%s,\"longitude\":%s,\"altitude\":%s,\"speedKmh\":%s,"
+      "\"course\":%s,\"satellites\":%d,\"hdop\":%s,\"fixType\":\"%s\","
+      "\"gpsTime\":\"%s\",\"gpsDate\":\"%s\",\"charsProcessed\":%lu,"
+      "\"failedChecksum\":%lu,\"uartActive\":%s}",
+      valid ? "true" : "false",
+      stateStr(),
+      qualStr().c_str(),
+      ip.c_str(),
+      latStr, lngStr, altStr, spdStr, crsStr,
+      sats, hdopStr, fixTypeStr,
+      timeStr, dateStr,
+      (unsigned long)gps.charsProcessed(),
+      (unsigned long)gps.failedChecksum(),
+      (totalGpsChars > 0) ? "true" : "false"
+    );
+    
+    return String(buf);
 }
 
 // ============================================================
