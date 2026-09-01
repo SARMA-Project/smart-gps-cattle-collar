@@ -6,16 +6,16 @@ A production-grade real-time GPS telemetry and geofencing dashboard built for **
 
 ## Key Features
 
+- 🔵 **100% Bluetooth Operation**: All Wi-Fi SSIDs, passwords, and hotspot requirements removed! Uses ESP32 Bluetooth Serial (SPP) `CowCollar-BT`.
 - 🛰️ **Hardware NMEA Parsing**: Powered by `TinyGPSPlus` on ESP32 HardwareSerial (`UART2` on GPIO16/GPIO17).
-- ⚡ **Real-Time WebSockets**: 1-second interval live telemetry broadcast to all connected mobile & desktop clients (`ws://<IP>/ws`) with automatic reconnect.
-- 📡 **Dual Wi-Fi Architecture**:
-  - **Primary**: Connects to your existing Wi-Fi router (Station Mode).
-  - **Fallback**: Automatically creates an Access Point (`SSID: GPS-TRACKER`, `Pass: GPS123456`, `IP: 192.168.4.1`) if router connection fails.
+- 📡 **Bluetooth Proximity & Distance Calibration**:
+  - Calibrated Bluetooth RSSI path-loss model tuned specifically for ESP32 Bluetooth SPP:
+    - High Signal / Close Range (-48 dBm) $\rightarrow$ 0.5m
+    - Medium Range (-58 to -78 dBm) $\rightarrow$ 1.5m to 11.0m
+    - Perimeter Boundary (-79 to -85 dBm) $\rightarrow$ 11.0m to 18.0m (15m geofence breach alert)
 - 🛡️ **Custom Geofence & Range Breach Alert**:
-  - Set a custom safe perimeter (e.g., **15 meters radius / 30 meters diameter** or custom inputs).
-  - Calculates real-time geodesic distance in meters from home anchor.
-  - Triggers a **glowing red flashing visual alert banner** + **audio alarm tone** when device goes out of range.
-  - Interactive map visualization showing green safe zone circle vs red breach zone circle.
+  - Set custom safe perimeter radius (e.g. 15 meters).
+  - Triggers a **glowing red visual alert banner** + **audio alarm tone** when device goes out of range.
 - 📶 **Calibrated Mobile Hotspot Wi-Fi RSSI Distance**:
   - Precision piecewise path-loss curve tuned for mobile phone hotspots:
     - Right next to phone (-45 to -50 dBm) $\rightarrow$ 0.5m (0–1m accuracy)

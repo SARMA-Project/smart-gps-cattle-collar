@@ -5,8 +5,8 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0a0f1e">
-  <meta name="description" content="Smart GPS Cattle Collar - Real-time livestock tracking and geofence monitoring">
-  <title>CattleGuard Pro • Live Tracker</title>
+  <meta name="description" content="Smart GPS Cattle Collar - Real-time Bluetooth livestock tracking and geofence monitoring">
+  <title>CattleGuard Pro • Bluetooth Tracker</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,7 +14,7 @@
 
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="style.css?v=3.1.0">
+  <link rel="stylesheet" href="style.css?v=5.0.0">
 </head>
 <body>
 
@@ -25,15 +25,19 @@
       <div class="top-bar-left">
         <span class="app-icon">🐄</span>
         <div>
-          <h1 class="app-title">CattleGuard <span class="pro-badge">PRO</span></h1>
-          <p class="app-sub" id="lbl-ip-info">Auto-connecting to collar…</p>
+          <h1 class="app-title">CattleGuard <span class="pro-badge">BT 5.0</span></h1>
+          <p class="app-sub" id="lbl-ip-info">Bluetooth Device: CowCollar-BT</p>
         </div>
       </div>
       <div class="top-bar-right">
+        <!-- Bluetooth Connect Button -->
+        <button class="icon-btn" id="btn-bt-connect" title="Pair Bluetooth Device">
+          <span>🔵</span>
+        </button>
         <!-- Device On/Off Pill -->
         <div class="device-pill offline" id="device-pill">
           <span class="pulse-dot" id="pulse-dot"></span>
-          <span id="status-text">SEARCHING</span>
+          <span id="status-text">DISCONNECTED</span>
         </div>
         <button class="icon-btn" id="btn-sound-toggle" title="Toggle Alarm">
           <span id="sound-icon">🔔</span>
@@ -100,6 +104,6 @@
 
   <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=3.1.0"></script>
+  <script src="app.js?v=5.0.0"></script>
 </body>
 </html>

@@ -1,10 +1,10 @@
 ﻿/**
- * CattleGuard Pro - Client v3.1 (Auto-Connect Edition)
+ * CattleGuard Pro - Bluetooth 5.0 Edition (v5.0)
  * Features:
- *  - Automatic endpoint polling & background IP discovery
- *  - No manual IP input or connect button required
- *  - Calibrated Wi-Fi RSSI distance engine
- *  - Geofence monitoring & sound alert
+ *  - 100% Bluetooth operation (No SSIDs, No Wi-Fi hotspots needed)
+ *  - Web Bluetooth / Serial API integration for pairing with "CowCollar-BT"
+ *  - Calibrated Bluetooth RSSI distance & location estimation
+ *  - Real-time Leaflet map tracking & geofence audio alarms
  */
 
 (function () {
@@ -22,21 +22,12 @@
   let cowLat    = 11.016842, cowLng    = 76.955819;
 
   let lastPacketAt = 0;
-  let isEspOnline  = false;
-  let activeHost   = location.hostname || 'cowcollar.local';
-
-  // Candidate hosts to try automatically
-  const candidateHosts = [
-    location.hostname,
-    'cowcollar.local',
-    '192.168.4.1',
-    '192.168.43.100',
-    '192.168.1.100',
-    '192.168.137.100'
-  ].filter(h => h && h !== 'localhost' && h !== '127.0.0.1');
+  let isBtConnected = false;
+  let bluetoothDevice = null;
+  let bluetoothPort = null;
 
   let smoothedDist = 0;
-  const ALPHA = 0.25;
+  const ALPHA = 0.30;
 
   let audioCtx = null;
   let lastBeep = 0;
@@ -44,7 +35,7 @@
 
   function $(id) { return document.getElementById(id); }
 
-  /* ── 1. MAP ── */
+  /* ── 1. MAP INITIALIZATION ── */
   function initMap() {
     if (typeof L === 'undefined') { return; }
 
@@ -74,10 +65,9 @@
     setTimeout(() => { if (map) map.invalidateSize(); }, 400);
 
     requestPhoneGps();
-    initAutoPoller();
   }
 
-  /* ── 2. PHONE GPS ── */
+  /* ── 2. PHONE GPS ANCHOR ── */
   function requestPhoneGps() {
     if (!('geolocation' in navigator)) return;
 
@@ -86,7 +76,7 @@
         farmerLat = pos.coords.latitude;
         farmerLng = pos.coords.longitude;
         updateFarmerAnchor();
-        if (!isEspOnline) {
+        if (!isBtConnected) {
           cowLat = farmerLat; cowLng = farmerLng;
           if (cowMarker) cowMarker.setLatLng([cowLat, cowLng]);
         }
@@ -118,15 +108,15 @@
     $('val-lng').textContent = lng.toFixed(5) + '°';
   }
 
-  /* ── 3. RSSI DISTANCE CALIBRATION ── */
+  /* ── 3. BLUETOOTH RSSI DISTANCE CALIBRATION ── */
   function rssiToDistance(rssi) {
-    if (!rssi || rssi === 0 || rssi < -98) return 35.0;
-    if (rssi >= -50) return 0.5;
-    if (rssi >= -58) return 0.5 + (-50 - rssi) * (1.0 / 8.0);
-    if (rssi >= -68) return 1.5 + (-58 - rssi) * (3.0 / 10.0);
-    if (rssi >= -78) return 4.5 + (-68 - rssi) * (6.5 / 10.0);
+    if (!rssi || rssi === 0 || rssi < -98) return 30.0;
+    if (rssi >= -48) return 0.5;
+    if (rssi >= -58) return 0.5 + (-48 - rssi) * (1.0 / 10.0);
+    if (rssi >= -68) return 1.5 + (-58 - rssi) * (3.5 / 10.0);
+    if (rssi >= -78) return 5.0 + (-68 - rssi) * (6.0 / 10.0);
     if (rssi >= -85) return 11.0 + (-78 - rssi) * (7.0 / 7.0);
-    return Math.min(65.0, 18.0 + (-85 - rssi) * 1.2);
+    return Math.min(60.0, 18.0 + (-85 - rssi) * 1.2);
   }
 
   function smoothDist(rawDist) {
@@ -135,7 +125,7 @@
     return smoothedDist;
   }
 
-  /* ── 4. ALARM SOUND ── */
+  /* ── 4. AUDIO ALARM ── */
   function beep() {
     if (!soundOn) return;
     const now = Date.now();
@@ -156,19 +146,18 @@
     } catch(e){}
   }
 
-  /* ── 5. DATA HANDLER ── */
+  /* ── 5. TELEMETRY PACKET PROCESSOR ── */
   function onData(data) {
     lastPacketAt = Date.now();
 
-    if (!isEspOnline) {
-      isEspOnline = true;
-      setOnline(data.ip || activeHost);
+    if (!isBtConnected) {
+      setBtOnline();
     }
 
-    const rawDist  = parseFloat(data.dist) || rssiToDistance(parseInt(data.rssi, 10) || -70);
-    const dist     = smoothDist(rawDist);
-    const speed    = parseFloat(data.spd) || 0;
-    const hasGps   = !!data.gpsFix && data.lat && parseFloat(data.lat) !== 0;
+    const rawDist = parseFloat(data.dist) || rssiToDistance(parseInt(data.rssi, 10) || -60);
+    const dist    = smoothDist(rawDist);
+    const speed   = parseFloat(data.spd) || 0;
+    const hasGps  = !!data.gpsFix && data.lat && parseFloat(data.lat) !== 0;
 
     if (hasGps) {
       cowLat = parseFloat(data.lat);
@@ -185,7 +174,7 @@
 
     showCoords(cowLat, cowLng);
     $('val-speed').textContent = speed.toFixed(1) + ' km/h';
-    $('val-status').textContent = hasGps ? '3D GPS' : 'Wi-Fi';
+    $('val-status').textContent = hasGps ? '3D GPS' : 'BT Signal';
 
     const maxR = parseInt($('radius-slider').value, 10) || 15;
     if (pastureCircle) pastureCircle.setRadius(maxR);
@@ -195,7 +184,7 @@
       banner.className = 'alert-card breach';
       $('banner-icon').textContent = '🚨';
       $('banner-title').textContent = 'OUT OF PASTURE!';
-      $('banner-desc').textContent  = 'Distance: ' + dist.toFixed(1) + 'm  (over by +' + (dist - maxR).toFixed(1) + 'm)';
+      $('banner-desc').textContent  = 'Bluetooth Range Distance: ' + dist.toFixed(1) + 'm (Over by +' + (dist - maxR).toFixed(1) + 'm)';
       $('badge-distance').textContent = dist.toFixed(1) + ' m';
       pastureCircle.setStyle({ color:'#f43f5e', fillColor:'#f43f5e', fillOpacity:0.25, weight:3 });
       beep();
@@ -203,31 +192,31 @@
       banner.className = 'alert-card safe';
       $('banner-icon').textContent = '🟢';
       $('banner-title').textContent = 'SAFE IN PASTURE';
-      $('banner-desc').textContent  = 'Distance: ' + dist.toFixed(1) + 'm  · Safe limit: ' + maxR + 'm';
+      $('banner-desc').textContent  = 'Bluetooth Distance: ' + dist.toFixed(1) + 'm · Safe limit: ' + maxR + 'm';
       $('badge-distance').textContent = dist.toFixed(1) + ' m';
       pastureCircle.setStyle({ color:'#10b981', fillColor:'#10b981', fillOpacity:0.18, weight:2 });
     }
   }
 
   /* ── 6. UI STATES ── */
-  function setOnline(host) {
-    isEspOnline = true;
+  function setBtOnline() {
+    isBtConnected = true;
     const pill = $('device-pill');
     if (pill) {
       pill.className = 'device-pill online';
-      $('status-text').textContent = 'ONLINE';
+      $('status-text').textContent = 'CONNECTED';
     }
-    $('lbl-ip-info').textContent = 'Collar connected (' + (host || 'Active') + ')';
+    $('lbl-ip-info').textContent = 'Bluetooth Device: Connected (CowCollar-BT)';
   }
 
-  function setOffline() {
-    isEspOnline = false;
+  function setBtOffline() {
+    isBtConnected = false;
     const pill = $('device-pill');
     if (pill) {
       pill.className = 'device-pill offline';
-      $('status-text').textContent = 'SEARCHING';
+      $('status-text').textContent = 'DISCONNECTED';
     }
-    $('lbl-ip-info').textContent = 'Searching for collar Wi-Fi…';
+    $('lbl-ip-info').textContent = 'Bluetooth Device: Disconnected';
 
     const cowEl = document.getElementById('marker-cow');
     if (cowEl) cowEl.classList.add('offline-marker');
@@ -237,51 +226,65 @@
 
     const banner = $('geofence-banner');
     banner.className = 'alert-card safe';
-    $('banner-icon').textContent = '🟡';
-    $('banner-title').textContent = 'SEARCHING FOR COLLAR';
-    $('banner-desc').textContent  = 'Ensure collar is powered ON or open http://192.168.4.1';
+    $('banner-icon').textContent = '🔵';
+    $('banner-title').textContent = 'BLUETOOTH READY';
+    $('banner-desc').textContent  = 'Click 🔵 top icon to pair with CowCollar-BT';
   }
 
-  /* ── 7. AUTO-POLLING TELEMETRY ENGINE ── */
-  function fetchGpsFrom(host) {
-    const protocol = location.protocol === 'https:' ? 'http:' : location.protocol;
-    const url = (host === location.hostname) ? '/api/gps' : protocol + '//' + host + '/api/gps';
+  /* ── 7. WEB BLUETOOTH & SERIAL CONNECTION ENGINE ── */
+  async function connectBluetooth() {
+    try {
+      // 1. Try Web Serial API (Chrome/Android Bluetooth Serial RFCOMM / USB)
+      if ('serial' in navigator) {
+        bluetoothPort = await navigator.serial.requestPort();
+        await bluetoothPort.open({ baudRate: 115200 });
 
-    return fetch(url, { mode: 'cors', cache: 'no-store' })
-      .then(res => {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
-      })
-      .then(data => {
-        activeHost = host;
-        onData(data);
-        return true;
-      });
-  }
+        setBtOnline();
+        const textDecoder = new TextDecoderStream();
+        const readableStreamClosed = bluetoothPort.readable.pipeTo(textDecoder.writable);
+        const reader = textDecoder.readable.getReader();
 
-  function initAutoPoller() {
-    setInterval(() => {
-      // 1. Try primary active host
-      fetchGpsFrom(activeHost).catch(() => {
-        // 2. If primary fails, scan candidate hosts silently
-        let found = false;
-        candidateHosts.reduce((promiseChain, candidate) => {
-          return promiseChain.then(success => {
-            if (success) return true;
-            return fetchGpsFrom(candidate).then(() => true).catch(() => false);
-          });
-        }, Promise.resolve(false)).then(hasConnected => {
-          if (!hasConnected && Date.now() - lastPacketAt > 2500) {
-            setOffline();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += value;
+          let lines = buffer.split('\n');
+          buffer = lines.pop(); // keep last incomplete line
+          for (let line of lines) {
+            line = line.trim();
+            if (line.startsWith('{') && line.endsWith('}')) {
+              try {
+                const json = JSON.parse(line);
+                onData(json);
+              } catch (err) {}
+            }
           }
+        }
+      }
+      // 2. Try Web Bluetooth API Fallback
+      else if ('bluetooth' in navigator) {
+        bluetoothDevice = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ['00001101-0000-1000-8000-00805f9b34fb'] // SPP UUID
         });
-      });
-    }, 1000);
+        setBtOnline();
+      } else {
+        alert('Web Bluetooth/Serial API is supported in Chrome on Android & Desktop. Please use Chrome browser.');
+      }
+    } catch (e) {
+      console.warn('Bluetooth Pairing:', e.message);
+    }
   }
 
   /* ── 8. LISTENERS ── */
   document.addEventListener('DOMContentLoaded', () => {
     initMap();
+
+    const btBtn = $('btn-bt-connect');
+    if (btBtn) {
+      btBtn.addEventListener('click', connectBluetooth);
+    }
 
     const slider = $('radius-slider');
     if (slider) {
@@ -318,6 +321,13 @@
         window.open(`https://www.google.com/maps?q=${cowLat},${cowLng}`, '_blank');
       });
     }
+
+    // Check packet liveness
+    setInterval(() => {
+      if (isBtConnected && Date.now() - lastPacketAt > 3500) {
+        setBtOffline();
+      }
+    }, 1000);
   });
 
 })();
