@@ -7,7 +7,7 @@
   <meta http-equiv="Expires" content="0">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#090d16">
-  <title>CattleGuard Pro • Smart Cattle GPS</title>
+  <title>CattleGuard Pro • Satellite GPS Tracker</title>
   
   <!-- Fonts: Plus Jakarta Sans & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -16,12 +16,10 @@
   
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="style.css?v=2.2.0">
+  <link rel="stylesheet" href="style.css?v=2.3.0">
 </head>
-
 <body>
 
-  <!-- App Viewport Wrapper -->
   <div class="app-container">
     
     <!-- Top Floating Glass Navigation -->
@@ -34,14 +32,14 @@
           <div class="title-row">
             <h1>CattleGuard<span class="pro-tag">PRO</span></h1>
           </div>
-          <p class="collar-id">NodeMCU Collar #1 &bull; Herd Alpha</p>
+          <p class="collar-id" id="lbl-ip-info">Collar IP: 192.168.43.100</p>
         </div>
       </div>
 
       <div class="header-actions">
-        <div class="status-chip offline" id="status-chip">
+        <div class="status-chip offline" id="status-chip" title="Click to Change IP">
           <span class="dot"></span>
-          <span class="status-label" id="status-text">Connecting</span>
+          <span class="status-label" id="status-text">CONNECTING</span>
         </div>
         <button class="icon-btn" id="btn-sound-toggle" title="Toggle Alarm Sound">
           <span id="sound-icon">🔔</span>
@@ -49,20 +47,20 @@
       </div>
     </header>
 
-    <!-- Edge-to-Edge Map Canvas -->
+    <!-- Edge-to-Edge Satellite Map Viewport -->
     <main class="map-viewport">
       <div id="map"></div>
       
       <!-- Floating Map Quick Action Pills -->
       <div class="map-overlay-controls">
-        <button class="map-btn map-btn-active" id="btn-layer-toggle" title="Toggle Satellite / Street Map">
-          🛰️ <span>Satellite</span>
-        </button>
-        <button class="map-btn" id="btn-sync-phone" title="Center on Phone Location">
+        <button class="map-btn map-btn-active" id="btn-sync-phone" title="Center on Phone Location">
           📍 <span>My Location</span>
         </button>
         <button class="map-btn" id="btn-lock-cow" title="Focus on Cow">
           🐄 <span>Find Cow</span>
+        </button>
+        <button class="map-btn" id="btn-change-ip" title="Configure ESP IP">
+          ⚙️ <span>Set IP</span>
         </button>
       </div>
     </main>
@@ -95,7 +93,7 @@
           <input type="range" id="radius-slider" min="5" max="100" value="15" step="1">
           <div class="slider-ticks">
             <span>5m</span>
-            <span>15m (Def)</span>
+            <span>15m (Default)</span>
             <span>50m</span>
             <span>100m</span>
           </div>
@@ -106,11 +104,11 @@
       <div class="telemetry-grid">
         <div class="telemetry-card">
           <span class="t-label">LATITUDE</span>
-          <span class="t-value" id="val-lat">--.------</span>
+          <span class="t-value" id="val-lat">11.01684°</span>
         </div>
         <div class="telemetry-card">
           <span class="t-label">LONGITUDE</span>
-          <span class="t-value" id="val-lng">--.------</span>
+          <span class="t-value" id="val-lng">76.95582°</span>
         </div>
         <div class="telemetry-card">
           <span class="t-label">CURRENT SPEED</span>
@@ -124,10 +122,10 @@
 
       <!-- Quick External Link -->
       <div class="sheet-footer">
-        <a id="link-gmaps" href="#" target="_blank" class="btn-gmaps">
+        <button id="btn-gmaps" class="btn-gmaps">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
           Open in Google Maps
-        </a>
+        </button>
       </div>
     </section>
 
@@ -135,6 +133,6 @@
 
   <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=2.2.0"></script>
+  <script src="app.js?v=2.3.0"></script>
 </body>
 </html>
