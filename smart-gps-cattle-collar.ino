@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ============================================================
  *  SMART CATTLE COLLAR FIRMWARE (ESP32 & ESP8266 HYBRID)
  * ============================================================
@@ -68,32 +68,52 @@ bool  isStaConnected       = false;
 float baseLat = 11.016842f;
 float baseLng = 76.955819f;
 
-// ── Precise Mobile-Hotspot Calibrated RSSI Distance ──
-float calculateCalibratedRssiDistance(int rssi) {
-  if (rssi == 0 || rssi < -98) return 35.0f; // Disconnected / Lost signal
+// ── RSSI Median Filter (7-sample ring buffer) ──
+// Eliminates random RSSI spikes before the distance formula
+#define RSSI_BUF_SIZE 7
+int rssiBuf[RSSI_BUF_SIZE] = {0};
+int rssiBufIdx = 0;
+bool rssiBufFull = false;
 
-  if (rssi >= -50) {
-    return 0.5f; // Right next to phone (0.5m)
-  } else if (rssi >= -58) {
-    return 0.5f + (float)(-50 - rssi) * (1.0f / 8.0f); // 0.5m to 1.5m
-  } else if (rssi >= -68) {
-    return 1.5f + (float)(-58 - rssi) * (3.0f / 10.0f); // 1.5m to 4.5m
-  } else if (rssi >= -78) {
-    return 4.5f + (float)(-68 - rssi) * (6.5f / 10.0f); // 4.5m to 11.0m
-  } else if (rssi >= -85) {
-    return 11.0f + (float)(-78 - rssi) * (7.0f / 7.0f); // 11.0m to 18.0m (15m limit ~ -82dBm)
-  } else {
-    float d = 18.0f + (float)(-85 - rssi) * 1.2f;
-    return d > 65.0f ? 65.0f : d;
+int getMedianRssi(int newRssi) {
+  rssiBuf[rssiBufIdx] = newRssi;
+  rssiBufIdx = (rssiBufIdx + 1) % RSSI_BUF_SIZE;
+  if (rssiBufIdx == 0) rssiBufFull = true;
+
+  int count = rssiBufFull ? RSSI_BUF_SIZE : rssiBufIdx;
+  int temp[RSSI_BUF_SIZE];
+  for (int i = 0; i < count; i++) temp[i] = rssiBuf[i];
+
+  // Insertion sort (small array, fast enough)
+  for (int i = 1; i < count; i++) {
+    int key = temp[i], j = i - 1;
+    while (j >= 0 && temp[j] > key) { temp[j + 1] = temp[j]; j--; }
+    temp[j + 1] = key;
   }
+  return temp[count / 2];
 }
 
+// ── Log-Distance Path-Loss Model ──
+// Formula: d = 10 ^ ((txPower - rssi) / (10 * n))
+//   txPower = RSSI at 1m from phone hotspot (~-40 dBm for most Android/iPhone)
+//   n       = path-loss exponent: 2.0=free space, 2.2=open field, 3.0=indoor
+float rssiToDistance(int rssi) {
+  if (rssi == 0 || rssi < -98) return 35.0f;
+  const float TX_POWER = -40.0f; // Measured RSSI at 1m from your phone hotspot
+  const float N        =   2.2f; // Open-field path-loss exponent
+  float d = pow(10.0f, (TX_POWER - (float)rssi) / (10.0f * N));
+  if (d < 0.3f) d = 0.3f;
+  if (d > 80.0f) d = 80.0f;
+  return d;
+}
+
+// ── EMA Smoother (light alpha=0.15 after median) ──
 float getSmoothedDistance(float rawDist) {
   if (smoothedDist < 0.01f) {
     smoothedDist = rawDist;
     return rawDist;
   }
-  const float ALPHA = 0.30f;
+  const float ALPHA = 0.15f; // Low alpha = more stable output
   smoothedDist = ALPHA * rawDist + (1.0f - ALPHA) * smoothedDist;
   return smoothedDist;
 }

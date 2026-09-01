@@ -1,4 +1,4 @@
-﻿/**
+/**
  * CattleGuard Pro — Wi-Fi HTTP Edition v6.0
  * Connects to ESP32/ESP8266 via HTTP polling (/api/gps)
  * Works from GitHub Pages (CORS-enabled)
@@ -25,7 +25,7 @@
   let geofenceRadius = 15;
 
   let smoothedDist = 0;
-  const ALPHA = 0.30;
+  const ALPHA = 0.15; // Match firmware (lower = more stable)
 
   let audioCtx = null;
   let lastBeep = 0;
@@ -98,15 +98,15 @@
     if (pastureCircle) pastureCircle.setLatLng([farmerLat, farmerLng]);
   }
 
-  /* ── 3. RSSI DISTANCE (calibrated for mobile hotspot) ── */
+  /* ── 3. RSSI DISTANCE (log-distance model, matches firmware exactly) ── */
   function rssiToDistance(rssi) {
     if (!rssi || rssi === 0 || rssi < -98) return 35.0;
-    if (rssi >= -50) return 0.5;
-    if (rssi >= -58) return 0.5 + (-50 - rssi) * (1.0 / 8.0);
-    if (rssi >= -68) return 1.5 + (-58 - rssi) * (3.0 / 10.0);
-    if (rssi >= -78) return 4.5 + (-68 - rssi) * (6.5 / 10.0);
-    if (rssi >= -85) return 11.0 + (-78 - rssi) * (7.0 / 7.0);
-    return Math.min(65.0, 18.0 + (-85 - rssi) * 1.2);
+    const TX_POWER = -40.0; // RSSI at 1m from phone hotspot
+    const N        =   2.2; // Open-field path-loss exponent
+    let d = Math.pow(10, (TX_POWER - rssi) / (10 * N));
+    if (d < 0.3) d = 0.3;
+    if (d > 80)  d = 80;
+    return d;
   }
 
   function smoothDist(rawDist) {
@@ -219,28 +219,47 @@
     $('banner-desc').textContent  = 'Enter ESP IP from Serial Monitor below';
   }
 
-  /* ── 7. HTTP POLLING ENGINE ── */
-  function startPolling() {
-    if (pollTimer) clearInterval(pollTimer);
+  /* ── 7. HTTP POLLING ENGINE (sequential, no overlap) ── */
+  let _pollActive = false;
+
+  function poll() {
     if (!espIp) return;
-
     const url = 'http://' + espIp.trim().replace(/^https?:\/\//, '') + '/api/gps';
-    $('lbl-ip-info').textContent = 'Connecting to ' + espIp + '…';
 
-    pollTimer = setInterval(() => {
-      fetch(url, { mode: 'cors', cache: 'no-store' })
-        .then(r => {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        })
-        .then(data => onData(data))
-        .catch(() => {
-          if (isOnline && Date.now() - lastPacketAt > 3000) {
-            isOnline = false;
-            setOffline();
-          }
-        });
-    }, 1000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500); // 2.5s hard timeout
+
+    fetch(url, { mode: 'cors', cache: 'no-store', signal: controller.signal })
+      .then(r => {
+        clearTimeout(timeout);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(data => {
+        onData(data);
+        schedulePoll(1000); // Next poll 1s after successful response
+      })
+      .catch(() => {
+        clearTimeout(timeout);
+        // Declare offline only after 8 seconds without any packet
+        if (isOnline && Date.now() - lastPacketAt > 8000) {
+          isOnline = false;
+          setOffline();
+        }
+        schedulePoll(2000); // Retry in 2s on error
+      });
+  }
+
+  function schedulePoll(delay) {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, delay);
+  }
+
+  function startPolling() {
+    if (pollTimer) clearTimeout(pollTimer);
+    if (!espIp) return;
+    $('lbl-ip-info').textContent = 'Connecting to ' + espIp + '...';
+    poll(); // Kick off first request immediately
   }
 
   /* ── 8. IP CONNECT LOGIC ── */
@@ -307,9 +326,9 @@
       });
     }
 
-    // Liveness check
+    // Liveness check — 8 seconds grace period
     setInterval(() => {
-      if (isOnline && Date.now() - lastPacketAt > 4000) {
+      if (isOnline && Date.now() - lastPacketAt > 8000) {
         isOnline = false;
         setOffline();
       }
