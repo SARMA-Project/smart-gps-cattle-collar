@@ -1,6 +1,6 @@
 /**
- * CattleGuard Pro - Satellite GPS & Geofence Engine
- * Pure Satellite View • Instant Coordinates • Reliable Google Maps Navigation
+ * CattleGuard Pro - Strict Hardware GPS & Geofence Engine
+ * Zero Fake Movement • Instant Offline Detection • Real Hardware Telemetry
  */
 
 (function () {
@@ -13,11 +13,11 @@
   let breadcrumbTrail = null;
   let trailHistory = [];
 
-  // Farmer's real phone location (Pasture Anchor)
+  // Farmer's real phone location (Pasture Center Anchor)
   let farmerLat = 11.016842;
   let farmerLng = 76.955819;
-  let currentCowLat = 11.016842;
-  let currentCowLng = 76.955819;
+  let cowLat = 11.016842;
+  let cowLng = 76.955819;
   let currentDist = 0.0;
   let hasPhoneGps = false;
 
@@ -26,7 +26,6 @@
   let audioCtx = null;
   let lastAlarmBeepTime = 0;
   let isSoundEnabled = true;
-  let wanderAngle = 0.0;
   let isEspOnline = false;
 
   function $(id) { return document.getElementById(id); }
@@ -38,14 +37,13 @@
       return;
     }
 
-    // Initialize Map with High-Resolution Esri World Imagery
     map = L.map('map', {
       zoomControl: false,
       attributionControl: false,
       maxZoom: 19
     }).setView([farmerLat, farmerLng], 18);
 
-    // Pure Satellite Layer Only
+    // High resolution Satellite Imagery (Esri World Imagery)
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 19
     }).addTo(map);
@@ -59,14 +57,14 @@
     });
     farmerMarker = L.marker([farmerLat, farmerLng], { icon: farmerIcon }).addTo(map);
 
-    // Cow Collar Marker (Live Moving Target)
+    // Cow Collar Marker
     const cowIcon = L.divIcon({
       className: '',
-      html: '<div class="marker-cow-glow">🐄</div>',
+      html: '<div class="marker-cow-glow" id="marker-cow">🐄</div>',
       iconSize: [36, 36],
       iconAnchor: [18, 18]
     });
-    cowMarker = L.marker([currentCowLat, currentCowLng], { icon: cowIcon }).addTo(map);
+    cowMarker = L.marker([cowLat, cowLng], { icon: cowIcon }).addTo(map);
 
     // Safe Pasture Boundary Circle
     pastureCircle = L.circle([farmerLat, farmerLng], {
@@ -85,14 +83,14 @@
       opacity: 0.85
     }).addTo(map);
 
-    // Display initial coordinates right away
-    updateCoordinatesDisplay(currentCowLat, currentCowLng);
+    // Display initial coordinates
+    updateCoordinatesDisplay(cowLat, cowLng);
 
     setTimeout(function () {
       if (map) map.invalidateSize();
     }, 400);
 
-    // Request Phone Real GPS Coordinates
+    // Acquire Real Phone GPS Coordinates
     requestPhoneGeolocation();
   }
 
@@ -106,20 +104,19 @@
           hasPhoneGps = true;
           updateFarmerAnchor(farmerLat, farmerLng);
           
-          // Also set initial cow near farmer if no packet yet
           if (!isEspOnline) {
-            currentCowLat = farmerLat + 0.00002;
-            currentCowLng = farmerLng + 0.00002;
-            updateCowPosition(currentCowLat, currentCowLng, 3.2, 0.0, false);
+            cowLat = farmerLat;
+            cowLng = farmerLng;
+            if (cowMarker) cowMarker.setLatLng([cowLat, cowLng]);
+            updateCoordinatesDisplay(cowLat, cowLng);
           }
         },
         function (err) {
-          console.warn('Phone GPS unavailable:', err.message);
+          console.warn('Phone GPS prompt dismissed/denied:', err.message);
         },
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
       );
 
-      // Continuously update farmer anchor when walking
       navigator.geolocation.watchPosition(
         function (pos) {
           farmerLat = pos.coords.latitude;
@@ -144,7 +141,7 @@
     $('val-lng').textContent = lng.toFixed(5) + '°';
   }
 
-  // 3. Audio Warning Tone
+  // 3. Audio Warning Alarm
   function triggerAudioAlert() {
     if (!isSoundEnabled) return;
     const now = Date.now();
@@ -169,25 +166,46 @@
     } catch (e) {}
   }
 
-  // 4. Update Cow Marker & Geofence Evaluation
-  function updateCowPosition(lat, lng, dist, speed, hasGpsFix) {
-    currentCowLat = lat;
-    currentCowLng = lng;
-    currentDist = dist;
+  // 4. Process Real Telemetry from ESP Collar
+  function handleCollarData(data) {
+    lastPacketTimestamp = Date.now();
+    isEspOnline = true;
 
-    updateCoordinatesDisplay(lat, lng);
+    // Status: Online
+    const chip = $('status-chip');
+    chip.className = 'status-chip online';
+    $('status-text').textContent = 'ONLINE';
+    $('lbl-ip-info').textContent = 'Collar IP: ' + espIp;
+
+    const distMeters = parseFloat(data.dist) || 0.0;
+    const speed = parseFloat(data.spd) || 0.0;
+    const hasGpsFix = !!data.gpsFix;
+
+    // Set real position: If GPS fix exists, use GPS; otherwise place at measured distance
+    if (hasGpsFix && data.lat && parseFloat(data.lat) !== 0) {
+      cowLat = parseFloat(data.lat);
+      cowLng = parseFloat(data.lng);
+    } else {
+      // Offset relative to phone by distance (Static angle until real movement)
+      const offset = distMeters * 0.000009;
+      cowLat = farmerLat + offset;
+      cowLng = farmerLng;
+    }
+
+    currentDist = distMeters;
+    updateCoordinatesDisplay(cowLat, cowLng);
     $('val-speed').textContent = speed.toFixed(1) + ' km/h';
-    $('val-status').textContent = hasGpsFix ? '3D GPS' : 'TRACKING';
-    $('badge-distance').textContent = dist.toFixed(1) + ' m';
+    $('val-status').textContent = hasGpsFix ? '3D GPS' : 'SIGNAL TRACK';
+    $('badge-distance').textContent = distMeters.toFixed(1) + ' m';
 
-    // Update Marker on Satellite Map
-    const cowPos = [lat, lng];
+    // Move marker to real position
+    const cowPos = [cowLat, cowLng];
     if (cowMarker) cowMarker.setLatLng(cowPos);
     trailHistory.push(cowPos);
-    if (trailHistory.length > 250) trailHistory.shift();
+    if (trailHistory.length > 200) trailHistory.shift();
     if (breadcrumbTrail) breadcrumbTrail.setLatLngs(trailHistory);
 
-    // Evaluate Boundary
+    // Geofence Evaluation
     const maxRadius = parseFloat($('radius-slider').value) || 15;
     pastureCircle.setRadius(maxRadius);
 
@@ -196,12 +214,12 @@
     const bannerDesc = $('banner-desc');
     const bannerIcon = $('banner-icon');
 
-    if (dist > maxRadius) {
-      // OUT OF PASTURE ALERT
+    if (distMeters > maxRadius) {
+      // BREACH STATE
       banner.className = 'geofence-banner breach';
       bannerIcon.textContent = '🚨';
       bannerTitle.textContent = 'OUT OF PASTURE!';
-      bannerDesc.textContent = 'Distance to Farmer: ' + dist.toFixed(1) + 'm (Exceeded by +' + (dist - maxRadius).toFixed(1) + 'm)';
+      bannerDesc.textContent = 'Collar Distance: ' + distMeters.toFixed(1) + 'm (Exceeded by +' + (distMeters - maxRadius).toFixed(1) + 'm)';
 
       pastureCircle.setStyle({
         color: '#f43f5e',
@@ -212,11 +230,11 @@
 
       triggerAudioAlert();
     } else {
-      // SAFE IN PASTURE
+      // SAFE STATE
       banner.className = 'geofence-banner safe';
       bannerIcon.textContent = '🟢';
       bannerTitle.textContent = 'SAFE IN PASTURE';
-      bannerDesc.textContent = 'Collar is inside your ' + maxRadius + 'm safe perimeter';
+      bannerDesc.textContent = 'Collar Distance: ' + distMeters.toFixed(1) + 'm &bull; Safe Limit: ' + maxRadius + 'm';
 
       pastureCircle.setStyle({
         color: '#10b981',
@@ -227,37 +245,40 @@
     }
   }
 
-  // 5. Process Telemetry from Collar
-  function handleCollarData(data) {
-    lastPacketTimestamp = Date.now();
-    isEspOnline = true;
+  // 5. Handle Device Switched Off / Offline State
+  function setCollarOffline() {
+    isEspOnline = false;
 
     const chip = $('status-chip');
-    chip.className = 'status-chip online';
-    $('status-text').textContent = 'ONLINE';
-    $('lbl-ip-info').textContent = 'Collar IP: ' + espIp;
+    chip.className = 'status-chip offline';
+    $('status-text').textContent = 'OFFLINE';
+    $('lbl-ip-info').textContent = 'Collar: Not Responding (' + espIp + ')';
 
-    const distMeters = parseFloat(data.dist) || 0.0;
-    const speed = parseFloat(data.spd) || 0.0;
-    const hasFix = !!data.gpsFix;
+    $('val-speed').textContent = '0.0 km/h';
+    $('val-status').textContent = 'OFFLINE';
+    $('badge-distance').textContent = '-- m';
 
-    let cLat, cLng;
-    if (hasFix && data.lat && parseFloat(data.lat) !== 0) {
-      cLat = parseFloat(data.lat);
-      cLng = parseFloat(data.lng);
-    } else {
-      wanderAngle += 0.08;
-      if (wanderAngle > 6.283) wanderAngle = 0.0;
-      const offsetLat = (distMeters * 0.000009) * Math.cos(wanderAngle);
-      const offsetLng = (distMeters * 0.000009) * Math.sin(wanderAngle);
-      cLat = farmerLat + offsetLat;
-      cLng = farmerLng + offsetLng;
-    }
+    const banner = $('geofence-banner');
+    banner.className = 'geofence-banner';
+    banner.style.background = 'rgba(255, 255, 255, 0.05)';
+    banner.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+    banner.style.boxShadow = 'none';
+    $('banner-icon').textContent = '⚠️';
+    $('banner-title').textContent = 'COLLAR OFFLINE';
+    $('banner-title').style.color = '#94a3b8';
+    $('banner-desc').textContent = 'Device switched off. Power on ESP8266 & Hotspot.';
 
-    updateCowPosition(cLat, cLng, distMeters, speed, hasFix);
+    pastureCircle.setStyle({
+      color: '#64748b',
+      fillColor: '#64748b',
+      fillOpacity: 0.1,
+      weight: 1
+    });
+
+    // FREEZE POSITION: Do NOT move or simulate any random wander!
   }
 
-  // 6. Polling & Auto-Discovery Engine
+  // 6. Polling & Auto-Discovery
   function pollCollar() {
     const candidateIps = [
       espIp, '192.168.43.100', '192.168.43.2', '192.168.43.3', '192.168.43.4',
@@ -268,7 +289,7 @@
       .then(res => res.json())
       .then(data => handleCollarData(data))
       .catch(() => {
-        // Parallel background subnet probe
+        // Probe other candidate IPs
         candidateIps.forEach(function (ip) {
           fetch('http://' + ip + '/api/gps', { mode: 'cors' })
             .then(res => res.json())
@@ -284,10 +305,10 @@
 
   // 7. UI Controls & Listeners
   function initListeners() {
-    // Open in Google Maps Handler
+    // Open in Google Maps
     $('btn-gmaps').onclick = function (e) {
       e.preventDefault();
-      const mapsUrl = 'https://www.google.com/maps/search/?api=1&query=' + currentCowLat + ',' + currentCowLng;
+      const mapsUrl = 'https://www.google.com/maps/search/?api=1&query=' + cowLat + ',' + cowLng;
       window.open(mapsUrl, '_blank');
     };
 
@@ -300,13 +321,13 @@
     // Lock on Cow Marker
     $('btn-lock-cow').onclick = function () {
       if (map && cowMarker) {
-        map.setView([currentCowLat, currentCowLng], 19, { animate: true });
+        map.setView(cowMarker.getLatLng(), 19, { animate: true });
       }
     };
 
     // Configure ESP IP
     $('btn-change-ip').onclick = function () {
-      const newIp = prompt('Enter ESP8266 IP Address (Default: 192.168.43.100):', espIp);
+      const newIp = prompt('Enter ESP8266 Collar IP Address (Default: 192.168.43.100):', espIp);
       if (newIp && newIp.trim() !== '') {
         espIp = newIp.trim();
         localStorage.setItem('esp_ip', espIp);
@@ -324,8 +345,6 @@
       const val = parseInt($('radius-slider').value, 10);
       $('radius-display').textContent = val + ' meters';
       if (pastureCircle) pastureCircle.setRadius(val);
-      // Re-evaluate
-      updateCowPosition(currentCowLat, currentCowLng, currentDist, 0.0, false);
     };
 
     // Alarm Sound Toggle
@@ -335,20 +354,10 @@
       $('btn-sound-toggle').style.opacity = isSoundEnabled ? '1' : '0.5';
     };
 
-    // Liveness Watchdog (Every 1s)
+    // Watchdog: If no packet received for > 2.5s, declare OFFLINE and FREEZE position
     setInterval(function () {
-      if (Date.now() - lastPacketTimestamp > 3500) {
-        isEspOnline = false;
-        const chip = $('status-chip');
-        chip.className = 'status-chip offline';
-        $('status-text').textContent = 'CONNECTING';
-
-        // Keep local position smooth while searching
-        wanderAngle += 0.05;
-        const simDist = 4.5 + Math.sin(wanderAngle) * 2.0;
-        const offsetLat = (simDist * 0.000009) * Math.cos(wanderAngle);
-        const offsetLng = (simDist * 0.000009) * Math.sin(wanderAngle);
-        updateCowPosition(farmerLat + offsetLat, farmerLng + offsetLng, simDist, 0.0, false);
+      if (Date.now() - lastPacketTimestamp > 2500) {
+        setCollarOffline();
       }
     }, 1000);
   }
@@ -356,6 +365,7 @@
   document.addEventListener('DOMContentLoaded', function () {
     initMap();
     initListeners();
+    setCollarOffline(); // Start in clean offline state
     pollCollar();
     setInterval(pollCollar, 1000);
   });
