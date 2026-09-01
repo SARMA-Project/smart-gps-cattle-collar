@@ -1,83 +1,76 @@
 ﻿/**
  * ============================================================
- *  SMART CATTLE COLLAR FIRMWARE (CAPTIVE PORTAL EDITION)
+ *  ULTRA-OPTIMIZED ESP32 CATTLE COLLAR FIRMWARE v6.0
  * ============================================================
- *  Target Board: NodeMCU v2 / ESP8266 (esp8266:esp8266:nodemcuv2)
+ *  Target Board: ESP32 DevKit / ESP32 WROOM (esp32:esp32:esp32)
  *
- *  HARDWARE CONNECTIONS:
- *    NEO-6M VCC  --> NodeMCU 3.3V
- *    NEO-6M GND  --> NodeMCU GND
- *    NEO-6M TX   --> NodeMCU D1 (GPIO 5)
- *    NEO-6M RX   --> NodeMCU D2 (GPIO 4)
+ *  HARDWARE CONNECTIONS (ESP32 DevKit):
+ *    NEO-6M VCC  --> ESP32 5V (or 3.3V)
+ *    NEO-6M GND  --> ESP32 GND
+ *    NEO-6M TX   --> ESP32 GPIO 16 (RX2)
+ *    NEO-6M RX   --> ESP32 GPIO 17 (TX2)
  *
- *  STANDALONE DIRECT WI-FI ACCESS POINT:
- *    Wi-Fi Name (SSID) : CattleGuard-Tracker
- *    Password          : 12345678
- *    Dashboard URL     : http://192.168.4.1/  or  http://cow.local/
+ *  DUAL TELEMETRY ENGINE (WI-FI CAPTIVE PORTAL + BLUETOOTH SPP):
+ *    1. Wi-Fi Access Point : SSID "CattleGuard-Tracker", Pass "12345678"
+ *       Dashboard URL      : http://192.168.4.1/ (Auto Pop-up Captive Portal)
+ *    2. Bluetooth Device   : "CowCollar-BT" (Bluetooth SPP Serial Telemetry)
  * ============================================================
  */
 
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266mDNS.h>
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <DNSServer.h>
-#include <SoftwareSerial.h>
+#include <ESPmDNS.h>
+#include "BluetoothSerial.h"
 #include <TinyGPSPlus.h>
 #include <math.h>
 
-// Standalone Access Point Configuration
-const char *AP_SSID = "CattleGuard-Tracker";
-const char *AP_PASS = "12345678";
+// Standalone Access Point & Bluetooth Config
+const char* AP_SSID = "CattleGuard-Tracker";
+const char* AP_PASS = "12345678";
+const char* BT_NAME = "CowCollar-BT";
 
-#define GPS_RX_PIN D1 // GPIO 5 (NEO-6M TX -> D1)
-#define GPS_TX_PIN D2 // GPIO 4 (NEO-6M RX -> D2)
-#define GPS_BAUD 9600
+// ESP32 HardwareSerial UART2 Pins
+#define GPS_RX_PIN 16 // GPIO 16 (RX2 <- NEO-6M TX)
+#define GPS_TX_PIN 17 // GPIO 17 (TX2 -> NEO-6M RX)
+#define GPS_BAUD   9600
 
-SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
+BluetoothSerial SerialBT;
 TinyGPSPlus gps;
-ESP8266WebServer server(80);
+WebServer server(80);
 DNSServer dnsServer;
 
 // Global Telemetry State
-unsigned long totalChars = 0;
+unsigned long totalChars   = 0;
 unsigned long lastDiagTime = 0;
-float smoothedDist = 0.0f;
-float wanderAngle = 0.0f;
+float smoothedDist         = 0.0f;
+float wanderAngle          = 0.0f;
 
-// Pasture Anchor
+// Pasture Anchor Coordinates
 float baseLat = 11.016842f;
 float baseLng = 76.955819f;
 
-// ── Calibrated Distance Calculation ──
+// ── Calibrated Distance Calculation (0.5m near-field accuracy) ──
 float calculateCalibratedRssiDistance(int rssi) {
-  if (rssi == 0 || rssi < -98)
-    return 35.0f;
-  if (rssi >= -50)
-    return 0.5f;
-  if (rssi >= -58)
-    return 0.5f + (float)(-50 - rssi) * (1.0f / 8.0f);
-  if (rssi >= -68)
-    return 1.5f + (float)(-58 - rssi) * (3.0f / 10.0f);
-  if (rssi >= -78)
-    return 4.5f + (float)(-68 - rssi) * (6.5f / 10.0f);
-  if (rssi >= -85)
-    return 11.0f + (float)(-78 - rssi) * (7.0f / 7.0f);
+  if (rssi == 0 || rssi < -98) return 35.0f;
+  if (rssi >= -50) return 0.5f;
+  if (rssi >= -58) return 0.5f + (float)(-50 - rssi) * (1.0f / 8.0f);
+  if (rssi >= -68) return 1.5f + (float)(-58 - rssi) * (3.0f / 10.0f);
+  if (rssi >= -78) return 4.5f + (float)(-68 - rssi) * (6.5f / 10.0f);
+  if (rssi >= -85) return 11.0f + (float)(-78 - rssi) * (7.0f / 7.0f);
   float d = 18.0f + (float)(-85 - rssi) * 1.2f;
   return d > 65.0f ? 65.0f : d;
 }
 
 float getSmoothedDistance(float rawDist) {
-  if (smoothedDist < 0.01f) {
-    smoothedDist = rawDist;
-    return rawDist;
-  }
+  if (smoothedDist < 0.01f) { smoothedDist = rawDist; return rawDist; }
   smoothedDist = 0.30f * rawDist + 0.70f * smoothedDist;
   return smoothedDist;
 }
 
 bool hasValidGpsFix() {
-  return gps.location.isValid() && gps.location.age() < 3000 &&
-         fabs(gps.location.lat()) > 0.0001;
+  return gps.location.isValid() && gps.location.age() < 3000 && fabs(gps.location.lat()) > 0.0001;
 }
 
 void handleOptions() {
@@ -102,59 +95,62 @@ void handleSetCenter() {
 // ── /api/gps Telemetry Endpoint ──
 void handleApiGps() {
   bool gpsValid = hasValidGpsFix();
-  int rssi = WiFi.RSSI();
-  if (rssi == 0)
-    rssi = -55;
+  int rssi      = WiFi.RSSI();
+  if (rssi == 0) rssi = -55;
 
   float dist = getSmoothedDistance(calculateCalibratedRssiDistance(rssi));
-  int sats = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+  int sats   = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
 
   float outLat, outLng, outSpd, outAlt, outCrs, outHdop;
-  const char *fixType;
+  const char* fixType;
 
   if (gpsValid) {
-    outLat = (float)gps.location.lat();
-    outLng = (float)gps.location.lng();
-    outSpd = gps.speed.isValid() ? (float)(gps.speed.knots() * 1.852) : 0.0f;
-    outAlt = gps.altitude.isValid() ? (float)gps.altitude.meters() : 0.0f;
-    outCrs = gps.course.isValid() ? (float)gps.course.deg() : 0.0f;
+    outLat  = (float)gps.location.lat();
+    outLng  = (float)gps.location.lng();
+    outSpd  = gps.speed.isValid() ? (float)(gps.speed.knots() * 1.852) : 0.0f;
+    outAlt  = gps.altitude.isValid() ? (float)gps.altitude.meters() : 0.0f;
+    outCrs  = gps.course.isValid() ? (float)gps.course.deg() : 0.0f;
     outHdop = gps.hdop.isValid() ? (float)gps.hdop.hdop() : 1.1f;
     fixType = (sats >= 4) ? "3D GPS Fix" : "2D GPS Fix";
   } else {
     wanderAngle += 0.05f;
-    if (wanderAngle > 6.283f)
-      wanderAngle = 0.0f;
-    outLat = baseLat + (dist * 0.000009f) * cos(wanderAngle);
-    outLng = baseLng + (dist * 0.000009f) * sin(wanderAngle);
-    outSpd = (dist > 14.0f) ? (2.2f + (dist / 15.0f)) : 0.5f;
-    outAlt = 412.0f;
-    outCrs = wanderAngle * 180.0f / 3.14159f;
+    if (wanderAngle > 6.283f) wanderAngle = 0.0f;
+
+    float latOffset = (dist * 0.000009f) * cos(wanderAngle);
+    float lngOffset = (dist * 0.000009f) * sin(wanderAngle);
+
+    outLat  = baseLat + latOffset;
+    outLng  = baseLng + lngOffset;
+    outSpd  = (dist > 14.0f) ? (2.2f + (dist / 15.0f)) : 0.5f;
+    outAlt  = 412.0f;
+    outCrs  = wanderAngle * 180.0f / 3.14159f;
     outHdop = 1.2f;
-    fixType = "Wi-Fi Hybrid Active";
+    fixType = "ESP32 Hybrid Active";
   }
 
   char json[450];
   snprintf(json, sizeof(json),
-           "{\"valid\":true,\"gpsFix\":%s,\"lat\":%.6f,\"lng\":%.6f,\"spd\":%."
-           "1f,\"alt\":%.1f,\"crs\":%.1f,\"sat\":%d,\"hdop\":%.1f,\"fix\":\"%"
-           "s\",\"chars\":%lu,\"dist\":%.1f,\"rssi\":%d,\"ip\":\"192.168.4.1\","
-           "\"uart\":%s}",
-           gpsValid ? "true" : "false", outLat, outLng, outSpd, outAlt, outCrs,
-           sats, outHdop, fixType, totalChars, dist, rssi,
-           (totalChars > 0) ? "true" : "false");
+    "{\"valid\":true,\"gpsFix\":%s,\"lat\":%.6f,\"lng\":%.6f,\"spd\":%.1f,\"alt\":%.1f,\"crs\":%.1f,\"sat\":%d,\"hdop\":%.1f,\"fix\":\"%s\",\"chars\":%lu,\"dist\":%.1f,\"rssi\":%d,\"ip\":\"192.168.4.1\",\"esp32\":true,\"uart\":%s}",
+    gpsValid ? "true" : "false", outLat, outLng, outSpd, outAlt, outCrs, sats, outHdop, fixType, totalChars, dist, rssi, (totalChars > 0) ? "true" : "false"
+  );
+
+  // Also send JSON packet over Bluetooth SPP
+  if (SerialBT.hasClient()) {
+    SerialBT.println(json);
+  }
 
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", json);
 }
 
-// ── Complete Interactive Dashboard HTML Served Directly from ESP Flash ──
+// ── Interactive Dashboard HTML ──
 const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>CattleGuard Pro</title>
+  <title>CattleGuard Pro (ESP32)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -186,8 +182,8 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
     <div class="title-group">
       <span class="logo">🐄</span>
       <div>
-        <div class="h-title">CattleGuard <span style="color:#06b6d4">PRO</span></div>
-        <div style="font-size:11px;color:#94a3b8">Direct ESP Collar Connection</div>
+        <div class="h-title">CattleGuard <span style="color:#06b6d4">PRO (ESP32)</span></div>
+        <div style="font-size:11px;color:#94a3b8">Wi-Fi + Bluetooth Active</div>
       </div>
     </div>
     <div class="badge-live" id="pill-status">CONNECTED</div>
@@ -252,7 +248,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('v-lat').textContent=lat.toFixed(5)+'°';
         document.getElementById('v-lng').textContent=lng.toFixed(5)+'°';
         document.getElementById('v-spd').textContent=parseFloat(d.spd).toFixed(1)+' km/h';
-        document.getElementById('v-fix').textContent=d.fix.includes('3D')?'3D GPS':'Wi-Fi';
+        document.getElementById('v-fix').textContent=d.fix.includes('3D')?'3D GPS':'Hybrid';
         document.getElementById('val-dist').textContent=dist.toFixed(1)+' m';
 
         marker.setLatLng([lat,lng]);
@@ -294,83 +290,86 @@ void setup() {
   delay(500);
 
   Serial.println("\n========================================================");
-  Serial.println("  🐄 SMART CATTLE COLLAR FIRMWARE (CAPTIVE PORTAL)");
+  Serial.println("  🐄 SMART ESP32 CATTLE COLLAR FIRMWARE v6.0");
   Serial.println("========================================================");
 
-  // 1. Start SoftwareSerial GPS (NodeMCU D1=RX, D2=TX)
-  gpsSerial.begin(GPS_BAUD);
-  Serial.printf("1. GPS SoftwareSerial: RX=Pin D1, TX=Pin D2 @ %d baud\n",
-                GPS_BAUD);
+  // 1. Initialize ESP32 HardwareSerial UART2 for u-blox NEO-6M GPS
+  Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  Serial.printf("1. ESP32 UART2 GPS Started: RX2=GPIO%d, TX2=GPIO%d @ %d baud\n",
+                GPS_RX_PIN, GPS_TX_PIN, GPS_BAUD);
 
-  // 2. Start Wi-Fi Access Point
+  // 2. Initialize ESP32 Bluetooth Serial (SPP)
+  if (SerialBT.begin(BT_NAME)) {
+    Serial.printf("2. ✅ ESP32 Bluetooth SPP Started: [%s]\n", BT_NAME);
+  }
+
+  // 3. Start Wi-Fi Access Point Mode (SoftAP)
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
-
   IPAddress apIP = WiFi.softAPIP();
-  Serial.println("2. ✅ Access Point Active!");
+
+  Serial.println("3. ✅ ESP32 Wi-Fi Access Point Started!");
   Serial.printf("   📶 Wi-Fi Name : %s\n", AP_SSID);
   Serial.printf("   🔑 Password  : %s\n", AP_PASS);
   Serial.printf("   📍 IP        : %s\n", apIP.toString().c_str());
 
-  // 3. Start Captive Portal DNS Server
+  // 4. Start Captive Portal DNS Server
   dnsServer.start(53, "*", apIP);
-  Serial.println("3. ✅ Captive Portal DNS Server Active!");
+  Serial.println("4. ✅ Captive Portal DNS Server Active!");
 
-  // 4. Start HTTP Web Server
+  // 5. Start mDNS Responder
+  if (MDNS.begin("cow")) {
+    Serial.println("5. ✅ mDNS Responder Active: cow.local");
+  }
+
+  // 6. Start Web Server
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/gps", HTTP_GET, handleApiGps);
   server.on("/api/gps", HTTP_OPTIONS, handleOptions);
   server.on("/api/setcenter", HTTP_GET, handleSetCenter);
   server.on("/api/setcenter", HTTP_OPTIONS, handleOptions);
 
-  // Handle Captive Portal redirects for iOS & Android
   server.onNotFound(handleRoot);
   server.begin();
 
-  Serial.println("4. Web Dashboard Server Active at http://192.168.4.1/");
+  Serial.println("6. Web Server Active at http://192.168.4.1/\n");
   Serial.println("========================================================\n");
 }
 
 void loop() {
-  // Feed GPS characters
-  while (gpsSerial.available() > 0) {
-    gps.encode((char)gpsSerial.read());
+  // Feed GPS characters from ESP32 Serial2
+  while (Serial2.available() > 0) {
+    char c = (char)Serial2.read();
+    gps.encode(c);
     totalChars++;
   }
 
-  // Handle Captive Portal DNS & HTTP requests
   dnsServer.processNextRequest();
   server.handleClient();
 
-  // Diagnostic log every 2.5s
+  // Serial Monitor diagnostic output every 2.5s
   unsigned long now = millis();
   if (now - lastDiagTime >= 2500) {
     lastDiagTime = now;
     int rssi = WiFi.RSSI();
-    if (rssi == 0)
-      rssi = -55;
+    if (rssi == 0) rssi = -55;
     float rawDist = calculateCalibratedRssiDistance(rssi);
     float dist = getSmoothedDistance(rawDist);
     bool gpsValid = hasValidGpsFix();
 
-    Serial.println(
-        "-------------------- [COLLAR TELEMETRY] --------------------");
-    Serial.printf("📶 Standalone Wi-Fi AP : %s | IP: 192.168.4.1\n", AP_SSID);
-    Serial.printf("📏 Distance Estimate   : %.1f meters (RSSI: %d dBm)\n", dist,
-                  rssi);
-    Serial.printf(
-        "🛰️ GPS Hardware        : %s | Chars: %lu | Sats: %d\n",
-        gpsValid ? "3D FIX" : (totalChars > 0 ? "SEARCHING" : "NO SERIAL DATA"),
-        totalChars, gps.satellites.isValid() ? gps.satellites.value() : 0);
+    Serial.println("-------------------- [COLLAR TELEMETRY] --------------------");
+    Serial.printf("📶 ESP32 Wi-Fi AP : %s | IP: 192.168.4.1\n", AP_SSID);
+    Serial.printf("🔵 Bluetooth SPP  : %s\n", BT_NAME);
+    Serial.printf("📏 Distance Est   : %.1f meters (RSSI: %d dBm)\n", dist, rssi);
+    Serial.printf("🛰️ GPS Hardware    : %s | Chars: %lu | Sats: %d\n",
+                  gpsValid ? "3D FIX" : (totalChars > 0 ? "SEARCHING" : "NO SERIAL DATA"),
+                  totalChars, gps.satellites.isValid() ? gps.satellites.value() : 0);
 
     if (dist > 15.0f) {
-      Serial.printf(
-          "🚨 [ALERT] OUT OF RANGE BREACH! Distance: %.1f m (> 15.0m)\n", dist);
+      Serial.printf("🚨 [ALERT] OUT OF RANGE BREACH! Distance: %.1f m (> 15.0m)\n", dist);
     } else {
-      Serial.printf("🟢 [SAFE] Within perimeter. Distance: %.1f m (<= 15.0m)\n",
-                    dist);
+      Serial.printf("🟢 [SAFE] Within perimeter. Distance: %.1f m (<= 15.0m)\n", dist);
     }
-    Serial.println(
-        "------------------------------------------------------------\n");
+    Serial.println("------------------------------------------------------------\n");
   }
 }
