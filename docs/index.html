@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 NEO-6M Smart GPS Tracking Dashboard</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet CSS for Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="brand-section">
+                <div class="logo-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"></polygon>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="main-title">LIVE GPS TRACKER</h1>
+                    <p class="subtitle">ESP32 + u-blox NEO-6M Hardware Telemetry</p>
+                </div>
+            </div>
+
+            <!-- Global Status Bar -->
+            <div class="status-bar">
+                <div class="status-badge" id="badge-gps">
+                    <span class="status-dot dot-yellow"></span>
+                    <span class="badge-label">GPS:</span>
+                    <span class="badge-value" id="val-gps-status">SEARCHING</span>
+                </div>
+                <div class="status-badge" id="badge-esp32">
+                    <span class="status-dot dot-green"></span>
+                    <span class="badge-label">ESP32:</span>
+                    <span class="badge-value" id="val-esp32-status">ONLINE</span>
+                </div>
+                <div class="status-badge" id="badge-wifi">
+                    <span class="status-dot dot-blue"></span>
+                    <span class="badge-label">Wi-Fi:</span>
+                    <span class="badge-value" id="val-wifi-mode">CONNECTING</span>
+                </div>
+                <div class="status-badge" id="badge-update">
+                    <span class="status-dot dot-pulse"></span>
+                    <span class="badge-label">UPDATE:</span>
+                    <span class="badge-value" id="val-last-update">0s ago</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- System Message / Diagnostic Banner -->
+        <div class="diagnostic-banner banner-warning" id="diagnostic-banner">
+            <div class="banner-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+            </div>
+            <div class="banner-text" id="banner-text">
+                Waiting for GPS satellite lock... Ensure antenna faces sky with clear line of sight.
+            </div>
+            <div class="banner-action">
+                <button class="btn btn-sm btn-ghost" id="btn-toggle-demo">Demo Mode: OFF</button>
+            </div>
+        </div>
+
+        <!-- Main Dashboard Content Grid -->
+        <main class="dashboard-grid">
+            
+            <!-- 9 Primary Telemetry Cards -->
+            <section class="cards-section">
+                <div class="section-header">
+                    <h2>Live Telemetry</h2>
+                    <div class="signal-quality-container">
+                        <span class="quality-label">Signal Quality:</span>
+                        <span class="quality-pill pill-neutral" id="signal-quality-pill">Searching...</span>
+                    </div>
+                </div>
+
+                <div class="cards-grid">
+                    <!-- 1. Latitude -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">LATITUDE</span>
+                            <span class="card-icon">🌐</span>
+                        </div>
+                        <div class="card-value mono" id="card-lat">--</div>
+                        <div class="card-footer">Degrees (WGS84)</div>
+                    </div>
+
+                    <!-- 2. Longitude -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">LONGITUDE</span>
+                            <span class="card-icon">🗺️</span>
+                        </div>
+                        <div class="card-value mono" id="card-lng">--</div>
+                        <div class="card-footer">Degrees (WGS84)</div>
+                    </div>
+
+                    <!-- 3. Speed -->
+                    <div class="telemetry-card accent-card">
+                        <div class="card-header">
+                            <span class="card-title">SPEED</span>
+                            <span class="card-icon">⚡</span>
+                        </div>
+                        <div class="card-value mono" id="card-speed">--</div>
+                        <div class="card-footer">Kilometers / Hour</div>
+                    </div>
+
+                    <!-- 4. Altitude -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">ALTITUDE</span>
+                            <span class="card-icon">🏔️</span>
+                        </div>
+                        <div class="card-value mono" id="card-alt">--</div>
+                        <div class="card-footer">Meters above MSL</div>
+                    </div>
+
+                    <!-- 5. Satellites -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">SATELLITES</span>
+                            <span class="card-icon">🛰️</span>
+                        </div>
+                        <div class="card-value mono" id="card-sats">0</div>
+                        <div class="card-footer">Tracked Constellations</div>
+                    </div>
+
+                    <!-- 6. HDOP -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">HDOP</span>
+                            <span class="card-icon">🎯</span>
+                        </div>
+                        <div class="card-value mono" id="card-hdop">--</div>
+                        <div class="card-footer">Horizontal Precision</div>
+                    </div>
+
+                    <!-- 7. Course / Heading -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">COURSE</span>
+                            <span class="card-icon">🧭</span>
+                        </div>
+                        <div class="card-value mono" id="card-course">--</div>
+                        <div class="card-footer">True Heading (deg)</div>
+                    </div>
+
+                    <!-- 8. Fix Type -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">FIX TYPE</span>
+                            <span class="card-icon">🔒</span>
+                        </div>
+                        <div class="card-value" id="card-fixtype">NO FIX</div>
+                        <div class="card-footer">NMEA Solution State</div>
+                    </div>
+
+                    <!-- 9. GPS Time -->
+                    <div class="telemetry-card">
+                        <div class="card-header">
+                            <span class="card-title">GPS UTC TIME</span>
+                            <span class="card-icon">🕒</span>
+                        </div>
+                        <div class="card-value mono" id="card-time">--:--:--</div>
+                        <div class="card-footer" id="card-date">YYYY-MM-DD</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Map & Tracking Section -->
+            <section class="map-section">
+                <div class="section-header">
+                    <h2>Interactive Map & Range Monitor</h2>
+                    <div class="map-status-info" id="map-status-info">
+                        Waiting for valid GPS location...
+                    </div>
+                </div>
+
+                <!-- Geofence & Safe Range Alert Control Panel -->
+                <div class="geofence-card">
+                    <div class="card-header-flex">
+                        <div class="header-left">
+                            <span class="card-icon">🛡️</span>
+                            <h3 class="geofence-title">Geofence / Range Alert System</h3>
+                        </div>
+                        <div class="geofence-toggle-wrap">
+                            <label class="switch">
+                                <input type="checkbox" id="chk-geofence-enable" checked>
+                                <span class="slider round"></span>
+                            </label>
+                            <span class="switch-label" id="lbl-geofence-status">ACTIVE</span>
+                        </div>
+                    </div>
+
+                    <div class="geofence-inputs-grid">
+                        <div class="input-field-group">
+                            <label for="num-geofence-radius">Safe Range Radius:</label>
+                            <div class="input-with-unit">
+                                <input type="number" id="num-geofence-radius" value="15" min="5" max="5000" step="1">
+                                <span class="unit-tag">Meters (e.g. 15m radius = 30m diameter)</span>
+                            </div>
+                        </div>
+
+                        <div class="geofence-actions">
+                            <button class="btn btn-secondary" id="btn-set-geofence-center" disabled>
+                                📍 Set Center at Current GPS
+                            </button>
+                            <button class="btn btn-ghost" id="btn-reset-geofence">
+                                🔄 Reset Center
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Live Geofence Status / Alert Bar -->
+                    <div class="geofence-alert-box safe-state" id="geofence-alert-box">
+                        <div class="alert-box-icon" id="geofence-alert-icon">✅</div>
+                        <div class="alert-box-content">
+                            <span class="alert-box-title" id="geofence-alert-title">SAFE ZONE: WITHIN RANGE</span>
+                            <span class="alert-box-desc" id="geofence-alert-desc">Current Distance: 0.0 m | Allowed Limit: 15.0 m</span>
+                        </div>
+                        <div class="audio-alert-wrap">
+                            <label><input type="checkbox" id="chk-audio-alert" checked> 🔊 Audio Alarm</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="map-container-wrapper">
+                    <div id="map" class="map-box"></div>
+                    <div class="map-overlay-offline" id="map-offline-overlay" style="display:none;">
+                        <p>⚠️ Map tiles unavailable offline. Telemetry metrics continue to update live.</p>
+                    </div>
+                </div>
+
+                <!-- Map & Tracking Controls -->
+                <div class="controls-bar">
+                    <div class="btn-group">
+                        <button class="btn btn-primary" id="btn-center-map" disabled>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line></svg>
+                            Center On Location
+                        </button>
+                        <a href="#" target="_blank" class="btn btn-secondary disabled" id="btn-gmaps">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                            Open in Google Maps
+                        </a>
+                    </div>
+
+                    <div class="btn-group">
+                        <button class="btn btn-success" id="btn-start-track">
+                            ▶ Start Track
+                        </button>
+                        <button class="btn btn-warning" id="btn-stop-track" disabled>
+                            ⏸ Stop
+                        </button>
+                        <button class="btn btn-danger" id="btn-clear-track">
+                            🗑️ Clear
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- System Footer -->
+        <footer class="app-footer">
+            <div class="footer-stat">
+                <span class="footer-label">ESP32 IP:</span>
+                <span class="footer-val mono" id="foot-ip">--.--.--.--</span>
+            </div>
+            <div class="footer-stat">
+                <span class="footer-label">Packets Received:</span>
+                <span class="footer-val mono" id="foot-packets">0</span>
+            </div>
+            <div class="footer-stat">
+                <span class="footer-label">UART Hardware Stream:</span>
+                <span class="footer-val mono" id="foot-uart">CHECKING...</span>
+            </div>
+            <div class="footer-stat">
+                <span class="footer-label">Track Points:</span>
+                <span class="footer-val mono" id="foot-points">0 / 500</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Leaflet JS for Map -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Main App Script -->
+    <script src="app.js"></script>
+</body>
+</html>
