@@ -2,161 +2,103 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Smart GPS Live Tracking Dashboard - ESP8266 + NEO-6M</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Smart Cattle GPS Collar</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<!-- Leaflet Map CSS -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="app-wrap">
-  <!-- Top Navigation & Connection Bar -->
-  <header class="navbar">
+<div class="mobile-app">
+  <!-- Clean Top Bar -->
+  <header class="top-bar">
     <div class="brand">
-      <div class="logo">🛰️</div>
+      <span class="logo-emoji">🐄</span>
       <div>
-        <h1>SMART GPS LIVE TRACKER</h1>
-        <p class="sub">ESP8266 NodeMCU &bull; u-blox NEO-6M Hardware</p>
+        <h1>Cattle Live Tracker</h1>
+        <p class="subtitle">Smart GPS &amp; Geofence Collar</p>
       </div>
     </div>
-    
-    <div class="ip-connect-box">
-      <label for="esp-ip">ESP IP Address:</label>
-      <div class="ip-input-group">
-        <input type="text" id="esp-ip" placeholder="e.g. 192.168.43.123" value="192.168.43.100">
-        <button id="btn-connect" class="btn-primary">Connect</button>
-      </div>
+    <div class="status-pill status-offline" id="collar-status">
+      <span class="pulse-dot"></span>
+      <span id="status-text">CONNECTING...</span>
     </div>
   </header>
 
-  <!-- Live Status Bar -->
-  <div class="status-bar">
-    <div class="badge" id="b-esp"><span class="dot dot-red"></span><span class="lbl">ESP:</span> <span class="val" id="v-esp">DISCONNECTED</span></div>
-    <div class="badge" id="b-gps"><span class="dot dot-yellow"></span><span class="lbl">GPS:</span> <span class="val" id="v-gps">SEARCHING</span></div>
-    <div class="badge"><span class="dot dot-green"></span><span class="lbl">HOTSPOT:</span> <span class="val">CowTracker</span></div>
-    <div class="badge"><span class="dot dot-pulse"></span><span class="lbl">PING:</span> <span class="val" id="v-ping">-- ms</span></div>
-    <div class="badge"><span class="lbl">UPDATED:</span> <span class="val" id="v-ago">0s ago</span></div>
+  <!-- Real-Time Geofence Alert Card -->
+  <div class="alert-card safe" id="alert-card">
+    <div class="alert-main">
+      <div class="alert-icon" id="alert-icon">🟢</div>
+      <div class="alert-info">
+        <h2 id="alert-title">SAFE: INSIDE PASTURE</h2>
+        <p id="alert-desc">Distance from Farmer: <span class="highlight" id="val-dist">0.0 m</span> &bull; Limit: <span id="val-limit">15.0 m</span></p>
+      </div>
+    </div>
+    <div class="alert-options">
+      <label class="sound-switch">
+        <input type="checkbox" id="chk-sound" checked>
+        <span>🔊 Alarm</span>
+      </label>
+    </div>
   </div>
 
-  <!-- Alert Banner -->
-  <div class="alert-banner alert-warning" id="alert-banner">
-    <div class="alert-msg" id="alert-text">📡 Enter your ESP8266 IP address above (found in Phone Hotspot or Serial Monitor) and click Connect.</div>
-    <label class="audio-toggle"><input type="checkbox" id="chk-sound" checked> 🔊 Audio Alarm</label>
+  <!-- Full Leaflet Map View -->
+  <div class="map-wrapper">
+    <div id="map"></div>
+    
+    <!-- Floating Map Controls -->
+    <div class="map-floating-controls">
+      <button id="btn-my-loc" class="btn-float" title="Set Boundary to Phone GPS">
+        📍 Center on My Location
+      </button>
+      <button id="btn-recenter-cow" class="btn-float btn-secondary" title="Center on Cow">
+        🐄 Find Cow
+      </button>
+    </div>
   </div>
 
-  <!-- Main Grid -->
-  <main class="main-grid">
-    <!-- Telemetry Cards -->
-    <section class="telemetry-section">
-      <div class="sec-header">
-        <h2>Live Telemetry</h2>
-        <span class="pill pill-gray" id="pill-signal">Searching Sats</span>
-      </div>
-      
-      <div class="cards-grid">
-        <div class="t-card">
-          <div class="c-head"><span>LATITUDE</span><span>🌐</span></div>
-          <div class="c-val" id="c-lat">--</div>
-          <div class="c-unit">WGS84 Degrees</div>
-        </div>
-
-        <div class="t-card">
-          <div class="c-head"><span>LONGITUDE</span><span>📍</span></div>
-          <div class="c-val" id="c-lng">--</div>
-          <div class="c-unit">WGS84 Degrees</div>
-        </div>
-
-        <div class="t-card card-accent">
-          <div class="c-head"><span>SPEED</span><span>⚡</span></div>
-          <div class="c-val" id="c-spd">--</div>
-          <div class="c-unit">Kilometers / Hour</div>
-        </div>
-
-        <div class="t-card">
-          <div class="c-head"><span>ALTITUDE</span><span>⛰️</span></div>
-          <div class="c-val" id="c-alt">--</div>
-          <div class="c-unit">Meters above MSL</div>
-        </div>
-
-        <div class="t-card">
-          <div class="c-head"><span>SATELLITES</span><span>🛰️</span></div>
-          <div class="c-val" id="c-sat">0</div>
-          <div class="c-unit">Tracked in Sky</div>
-        </div>
-
-        <div class="t-card">
-          <div class="c-head"><span>HDOP PRECISION</span><span>🎯</span></div>
-          <div class="c-val" id="c-hdop">--</div>
-          <div class="c-unit">Horizontal Dilution</div>
-        </div>
-
-        <div class="t-card">
-          <div class="c-head"><span>HEADING / COURSE</span><span>🧭</span></div>
-          <div class="c-val" id="c-crs">--</div>
-          <div class="c-unit">True Compass Degrees</div>
-        </div>
-
-        <div class="t-card">
-          <div class="c-head"><span>FIX TYPE</span><span>🔒</span></div>
-          <div class="c-val" id="c-fix">NO FIX</div>
-          <div class="c-unit">NMEA Solution</div>
-        </div>
-
-        <div class="t-card card-wide">
-          <div class="c-head"><span>GPS ATOMIC TIME (UTC)</span><span>⏱️</span></div>
-          <div class="c-val" id="c-time">--:--:--</div>
-          <div class="c-unit" id="c-date">YYYY-MM-DD</div>
+  <!-- Quick Range Controller & Telemetry -->
+  <section class="bottom-panel">
+    <div class="control-row">
+      <div class="range-selector">
+        <label for="range-input">🛡️ Boundary Range:</label>
+        <div class="input-unit">
+          <input type="number" id="range-input" value="15" min="5" max="500" step="1">
+          <span>meters</span>
         </div>
       </div>
-    </section>
+      <a id="btn-gmaps" href="#" target="_blank" class="btn-gmaps">
+        ↗ Google Maps
+      </a>
+    </div>
 
-    <!-- Map & Geofence Section -->
-    <section class="map-section">
-      <div class="sec-header">
-        <h2>Live Map &amp; Geofence Range</h2>
-        <span class="info-tag" id="map-info">Waiting for coordinates...</span>
+    <!-- Minimal Clean Telemetry (No Signal Strength) -->
+    <div class="telemetry-row">
+      <div class="metric">
+        <span class="m-label">LATITUDE</span>
+        <span class="m-val mono" id="t-lat">--</span>
       </div>
-
-      <!-- Geofence Controls -->
-      <div class="geofence-bar">
-        <div class="geo-input-wrap">
-          <span>🛡️ Safe Range Radius:</span>
-          <input type="number" id="geo-radius" value="15" min="5" max="5000">
-          <span>Meters</span>
-        </div>
-        <div class="geo-actions">
-          <button id="btn-set-anchor" class="btn-sm">📍 Set Anchor Here</button>
-          <button id="btn-recenter" class="btn-sm btn-ghost">◎ Recenter</button>
-          <a id="btn-gmaps" href="#" target="_blank" class="btn-sm btn-green" style="text-decoration:none">↗ Google Maps</a>
-        </div>
+      <div class="metric">
+        <span class="m-label">LONGITUDE</span>
+        <span class="m-val mono" id="t-lng">--</span>
       </div>
-
-      <!-- Leaflet Map Container -->
-      <div class="map-wrap">
-        <div id="map"></div>
+      <div class="metric">
+        <span class="m-label">SPEED</span>
+        <span class="m-val mono" id="t-spd">0.0 km/h</span>
       </div>
-
-      <!-- Range Status Box -->
-      <div class="range-status safe" id="range-box">
-        <span id="range-icon">🟢</span>
-        <div class="range-info">
-          <div class="range-title" id="range-title">SAFE ZONE: WITHIN PERIMETER</div>
-          <div class="range-desc" id="range-desc">Distance to Anchor: 0.0 m &bull; Allowed: 15.0 m</div>
-        </div>
+      <div class="metric">
+        <span class="m-label">COLLAR POSITION</span>
+        <span class="m-val mono" id="t-fix">TRACKING</span>
       </div>
-    </section>
-  </main>
-
-  <!-- Footer Diagnostics -->
-  <footer>
-    <div>UART: <span id="f-uart" style="color:#f43f5e;font-weight:700">CHECKING...</span></div>
-    <div>Total Packets: <span id="f-pkts" style="font-family:monospace;color:#38bdf8">0</span></div>
-    <div>Distance to Anchor: <span id="f-dist" style="font-family:monospace">--</span></div>
-  </footer>
+    </div>
+  </section>
 </div>
 
+<!-- Leaflet Map JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
+
