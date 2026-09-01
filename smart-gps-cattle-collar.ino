@@ -42,8 +42,14 @@
 // ============================================================
 //  CONFIGURATION — Edit your Wi-Fi credentials here
 // ============================================================
-static const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-static const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+// ---- PHONE HOTSPOT CREDENTIALS ----
+// On your phone: Settings -> Hotspot
+// Set Hotspot Name: CowTracker
+// Set Hotspot Password: cow12345
+static const char* WIFI_SSID     = "CowTracker";
+static const char* WIFI_PASSWORD = "cow12345";
+
+// If hotspot fails, ESP8266 creates its own AP:
 static const char* AP_SSID       = "GPS-TRACKER";
 static const char* AP_PASSWORD   = "GPS123456";
 
