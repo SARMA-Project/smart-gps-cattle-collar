@@ -1,167 +1,179 @@
 /**
- * Smart Cattle GPS Collar - Mobile Live Tracker Engine
- * Features: Real Phone GPS Boundary + Distance Geofencing + Leaflet Map
+ * CattleGuard Pro - Mobile GPS & Hybrid Geofence Engine
+ * Features: Satellite Maps, Phone GPS Geolocation, Web Audio Alarm, Auto-Discovery
  */
 
 (function () {
   'use strict';
 
   let map = null;
+  let satelliteLayer = null;
+  let streetLayer = null;
+  let isSatellite = true;
+
   let farmerMarker = null;
   let cowMarker = null;
   let pastureCircle = null;
-  let trail = null;
-  let trailPoints = [];
+  let breadcrumbTrail = null;
+  let trailHistory = [];
 
-  // Farmer's real phone GPS location
+  // Farmer's real phone location (Center/Anchor)
   let farmerLat = 11.016842;
   let farmerLng = 76.955819;
   let hasPhoneGps = false;
 
   let espIp = localStorage.getItem('esp_ip') || '192.168.43.100';
-  let lastPacketTime = Date.now();
+  let lastPacketTimestamp = Date.now();
   let audioCtx = null;
-  let lastAlarmBeep = 0;
+  let lastAlarmBeepTime = 0;
+  let isSoundEnabled = true;
   let wanderAngle = 0.0;
 
   function $(id) { return document.getElementById(id); }
 
-  // 1. Initialize Leaflet Map (Mobile-First)
+  // 1. Initialize Dual-Layer Leaflet Map
   function initMap() {
     if (typeof L === 'undefined') {
-      console.error('Leaflet JS not loaded');
+      console.error('Leaflet JS is not loaded.');
       return;
     }
 
     map = L.map('map', {
       zoomControl: false,
-      attributionControl: false
+      attributionControl: false,
+      maxZoom: 19
     }).setView([farmerLat, farmerLng], 18);
 
-    // High performance CartoDB Voyager tiles (Clear, beautiful for outdoor farms)
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19,
-      subdomains: 'abcd'
+    // High resolution Satellite Imagery (Esri World Imagery)
+    satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19
     }).addTo(map);
 
-    // Zoom buttons in top-left
-    L.control.zoom({ position: 'topleft' }).addTo(map);
+    // Dark Street View (CartoDB Dark Matter)
+    streetLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      subdomains: 'abcd'
+    });
 
-    // Farmer Icon (Phone GPS Pin)
+    // Farmer Phone Pin (Center)
     const farmerIcon = L.divIcon({
       className: '',
-      html: '<div style="position:relative;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:#3b82f6;border:3px solid #fff;border-radius:50%;box-shadow:0 0 15px rgba(59,130,246,0.8);font-size:16px;">📍</div>',
+      html: '<div class="marker-radar-ring">📍</div>',
       iconSize: [32, 32],
       iconAnchor: [16, 16]
     });
     farmerMarker = L.marker([farmerLat, farmerLng], { icon: farmerIcon }).addTo(map);
 
-    // Cow Icon (Live Collar Marker)
+    // Cow Collar Marker (Live Moving Target)
     const cowIcon = L.divIcon({
       className: '',
-      html: '<div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:#06b6d4;border:3px solid #fff;border-radius:50%;box-shadow:0 0 18px #06b6d4;font-size:18px;">🐄</div>',
-      iconSize: [34, 34],
-      iconAnchor: [17, 17]
+      html: '<div class="marker-cow-glow">🐄</div>',
+      iconSize: [36, 36],
+      iconAnchor: [18, 18]
     });
     cowMarker = L.marker([farmerLat, farmerLng], { icon: cowIcon }).addTo(map);
 
-    // 15m Pasture Safe Boundary Circle
+    // Safe Pasture Boundary Circle
     pastureCircle = L.circle([farmerLat, farmerLng], {
       radius: 15,
       color: '#10b981',
       fillColor: '#10b981',
       fillOpacity: 0.18,
       weight: 2,
-      dashArray: '6,6'
+      dashArray: '6, 6'
     }).addTo(map);
 
-    // Trail path
-    trail = L.polyline([], { color: '#06b6d4', weight: 3, opacity: 0.8 }).addTo(map);
+    // Breadcrumb Trail
+    breadcrumbTrail = L.polyline([], {
+      color: '#06b6d4',
+      weight: 3,
+      opacity: 0.85
+    }).addTo(map);
 
-    // Invalidate map size after 300ms to ensure full container fill on mobile
-    setTimeout(function() {
+    // Auto-fit bounds
+    setTimeout(function () {
       if (map) map.invalidateSize();
-    }, 300);
+    }, 400);
 
-    // Acquire Phone's Real GPS Location
-    requestPhoneGps();
+    // Prompt and bind Phone GPS
+    requestPhoneGeolocation();
   }
 
-  // 2. Request Mobile Phone Real GPS Location
-  function requestPhoneGps() {
+  // 2. Real-Time Phone GPS Tracker
+  function requestPhoneGeolocation() {
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         function (pos) {
           farmerLat = pos.coords.latitude;
           farmerLng = pos.coords.longitude;
           hasPhoneGps = true;
-          updateFarmerPosition(farmerLat, farmerLng);
+          updateFarmerAnchor(farmerLat, farmerLng);
         },
         function (err) {
-          console.warn('Phone GPS prompt dismissed or denied:', err);
+          console.warn('Phone GPS prompt dismissed/unavailable:', err.message);
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
       );
 
-      // Continuously watch phone location if farmer is walking
+      // Continuously update farmer anchor if walking
       navigator.geolocation.watchPosition(
         function (pos) {
           farmerLat = pos.coords.latitude;
           farmerLng = pos.coords.longitude;
-          updateFarmerPosition(farmerLat, farmerLng);
+          updateFarmerAnchor(farmerLat, farmerLng);
         },
         null,
-        { enableHighAccuracy: true, maximumAge: 3000 }
+        { enableHighAccuracy: true, maximumAge: 2000 }
       );
     }
   }
 
-  function updateFarmerPosition(lat, lng) {
+  function updateFarmerAnchor(lat, lng) {
     if (!map) return;
     const pos = [lat, lng];
     farmerMarker.setLatLng(pos);
     pastureCircle.setLatLng(pos);
-    map.panTo(pos, { animate: true });
   }
 
   // 3. Audio Alarm Tone
-  function playAlarm() {
-    if (!$('chk-sound').checked) return;
+  function triggerAudioAlert() {
+    if (!isSoundEnabled) return;
     const now = Date.now();
-    if (now - lastAlarmBeep < 1000) return;
-    lastAlarmBeep = now;
+    if (now - lastAlarmBeepTime < 900) return;
+    lastAlarmBeepTime = now;
 
     try {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === 'suspended') audioCtx.resume();
+      
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.type = 'sawtooth';
       osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.3);
+      osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.28);
       gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.28);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
       osc.start();
-      osc.stop(audioCtx.currentTime + 0.3);
+      osc.stop(audioCtx.currentTime + 0.28);
     } catch (e) {}
   }
 
-  // 4. Process Incoming Telemetry from ESP Collar
-  function processTelemetry(data) {
-    lastPacketTime = Date.now();
+  // 4. Process Incoming Collar Telemetry
+  function handleCollarData(data) {
+    lastPacketTimestamp = Date.now();
 
-    // Update Top Status Pill
-    const pill = $('collar-status');
-    pill.className = 'status-pill status-online';
-    $('status-text').textContent = 'COLLAR ONLINE';
+    // Top Status Indicator
+    const chip = $('status-chip');
+    chip.className = 'status-chip online';
+    $('status-text').textContent = 'Live';
 
-    const dist = parseFloat(data.dist) || 0.0;
-    const allowedLimit = parseFloat($('range-input').value) || 15;
-    pastureCircle.setRadius(allowedLimit);
+    const distMeters = parseFloat(data.dist) || 0.0;
+    const maxRadius = parseFloat($('radius-slider').value) || 15;
+    pastureCircle.setRadius(maxRadius);
 
-    // Calculate Cow Coordinates (Relative to Phone's GPS)
+    // Calculate Cow Coordinates
     let cowLat, cowLng;
     if (data.gpsFix && data.lat && parseFloat(data.lat) !== 0) {
       cowLat = parseFloat(data.lat);
@@ -170,55 +182,54 @@
       wanderAngle += 0.08;
       if (wanderAngle > 6.283) wanderAngle = 0.0;
       // 1 meter ≈ 0.000009 degrees
-      const offsetLat = (dist * 0.000009) * Math.cos(wanderAngle);
-      const offsetLng = (dist * 0.000009) * Math.sin(wanderAngle);
+      const offsetLat = (distMeters * 0.000009) * Math.cos(wanderAngle);
+      const offsetLng = (distMeters * 0.000009) * Math.sin(wanderAngle);
       cowLat = farmerLat + offsetLat;
       cowLng = farmerLng + offsetLng;
     }
 
-    // Update Telemetry Display (Pure GPS info - No signal strength shown)
-    $('t-lat').textContent = cowLat.toFixed(5) + '°';
-    $('t-lng').textContent = cowLng.toFixed(5) + '°';
-    $('t-spd').textContent = (parseFloat(data.spd) || 0.0).toFixed(1) + ' km/h';
-    $('t-fix').textContent = data.gpsFix ? '3D SATELLITE' : 'ACTIVE';
-    $('val-dist').textContent = dist.toFixed(1) + ' m';
-    $('val-limit').textContent = allowedLimit.toFixed(1) + ' m';
-    $('btn-gmaps').href = 'https://www.google.com/maps?q=' + cowLat + ',' + cowLng;
+    // Update Telemetry Display (Pure GPS data)
+    $('val-lat').textContent = cowLat.toFixed(5) + '°';
+    $('val-lng').textContent = cowLng.toFixed(5) + '°';
+    $('val-speed').textContent = (parseFloat(data.spd) || 0.0).toFixed(1) + ' km/h';
+    $('val-status').textContent = data.gpsFix ? '3D GPS' : 'TRACKING';
+    $('badge-distance').textContent = distMeters.toFixed(1) + ' m';
+    $('link-gmaps').href = 'https://www.google.com/maps?q=' + cowLat + ',' + cowLng;
 
-    // Update Cow Marker Position & Trail
+    // Update Map Marker & Breadcrumb
     const cowPos = [cowLat, cowLng];
     cowMarker.setLatLng(cowPos);
-    trailPoints.push(cowPos);
-    if (trailPoints.length > 250) trailPoints.shift();
-    trail.setLatLngs(trailPoints);
+    trailHistory.push(cowPos);
+    if (trailHistory.length > 300) trailHistory.shift();
+    breadcrumbTrail.setLatLngs(trailHistory);
 
     // Geofence Evaluation
-    const alertCard = $('alert-card');
-    const alertTitle = $('alert-title');
-    const alertDesc = $('alert-desc');
-    const alertIcon = $('alert-icon');
+    const banner = $('geofence-banner');
+    const bannerTitle = $('banner-title');
+    const bannerDesc = $('banner-desc');
+    const bannerIcon = $('banner-icon');
 
-    if (dist > allowedLimit) {
-      // BREACH STATE (RED)
-      alertCard.className = 'alert-card breach';
-      alertIcon.textContent = '🚨';
-      alertTitle.textContent = 'ALERT: CATTLE OUT OF PASTURE!';
-      alertDesc.innerHTML = 'Distance from Farmer: <span class="highlight">' + dist.toFixed(1) + ' m</span> &bull; Exceeded by +' + (dist - allowedLimit).toFixed(1) + ' m';
+    if (distMeters > maxRadius) {
+      // BREACH STATE
+      banner.className = 'geofence-banner breach';
+      bannerIcon.textContent = '🚨';
+      bannerTitle.textContent = 'OUT OF PASTURE!';
+      bannerDesc.textContent = 'Distance to Farmer: ' + distMeters.toFixed(1) + 'm (Exceeded by +' + (distMeters - maxRadius).toFixed(1) + 'm)';
 
       pastureCircle.setStyle({
-        color: '#ef4444',
-        fillColor: '#ef4444',
+        color: '#f43f5e',
+        fillColor: '#f43f5e',
         fillOpacity: 0.35,
         weight: 3
       });
 
-      playAlarm();
+      triggerAudioAlert();
     } else {
-      // SAFE STATE (GREEN)
-      alertCard.className = 'alert-card safe';
-      alertIcon.textContent = '🟢';
-      alertTitle.textContent = 'SAFE: INSIDE PASTURE';
-      alertDesc.innerHTML = 'Distance from Farmer: <span class="highlight">' + dist.toFixed(1) + ' m</span> &bull; Limit: ' + allowedLimit.toFixed(1) + ' m';
+      // SAFE STATE
+      banner.className = 'geofence-banner safe';
+      bannerIcon.textContent = '🟢';
+      bannerTitle.textContent = 'SAFE IN PASTURE';
+      bannerDesc.textContent = 'Collar is inside your ' + maxRadius + 'm safe perimeter';
 
       pastureCircle.setStyle({
         color: '#10b981',
@@ -239,54 +250,80 @@
     // Try current IP
     fetch('http://' + espIp.trim().replace(/^https?:\/\//, '') + '/api/gps', { mode: 'cors' })
       .then(res => res.json())
-      .then(data => processTelemetry(data))
+      .then(data => handleCollarData(data))
       .catch(() => {
-        // If lost, scan other candidates in parallel
+        // Scan other subnet candidates in parallel
         candidateIps.forEach(function (ip) {
           fetch('http://' + ip + '/api/gps', { mode: 'cors' })
             .then(res => res.json())
             .then(data => {
               espIp = ip;
               localStorage.setItem('esp_ip', ip);
-              processTelemetry(data);
+              handleCollarData(data);
             })
-            .catch(()=>{});
+            .catch(() => {});
         });
       });
   }
 
-  // 6. UI Controls
-  function initControls() {
-    $('btn-my-loc').onclick = function () {
-      requestPhoneGps();
+  // 6. Setup Interactive UI Listeners
+  function initListeners() {
+    // Satellite / Street Map Toggle
+    $('btn-layer-toggle').onclick = function () {
+      isSatellite = !isSatellite;
+      if (isSatellite) {
+        map.removeLayer(streetLayer);
+        map.addLayer(satelliteLayer);
+        $('btn-layer-toggle').className = 'map-btn map-btn-active';
+        $('btn-layer-toggle').innerHTML = '🛰️ <span>Satellite</span>';
+      } else {
+        map.removeLayer(satelliteLayer);
+        map.addLayer(streetLayer);
+        $('btn-layer-toggle').className = 'map-btn';
+        $('btn-layer-toggle').innerHTML = '🗺️ <span>Streets</span>';
+      }
+    };
+
+    // Center on Phone Location
+    $('btn-sync-phone').onclick = function () {
+      requestPhoneGeolocation();
       if (map) map.setView([farmerLat, farmerLng], 18, { animate: true });
     };
 
-    $('btn-recenter-cow').onclick = function () {
+    // Lock on Cow Marker
+    $('btn-lock-cow').onclick = function () {
       if (map && cowMarker) {
         map.setView(cowMarker.getLatLng(), 19, { animate: true });
       }
     };
 
-    $('range-input').oninput = function () {
-      const r = parseFloat($('range-input').value) || 15;
-      if (pastureCircle) pastureCircle.setRadius(r);
-      $('val-limit').textContent = r.toFixed(1) + ' m';
+    // Radius Slider
+    $('radius-slider').oninput = function () {
+      const val = parseInt($('radius-slider').value, 10);
+      $('radius-display').textContent = val + ' meters';
+      if (pastureCircle) pastureCircle.setRadius(val);
     };
 
-    // Check collar timeout
+    // Alarm Sound Toggle
+    $('btn-sound-toggle').onclick = function () {
+      isSoundEnabled = !isSoundEnabled;
+      $('sound-icon').textContent = isSoundEnabled ? '🔔' : '🔕';
+      $('btn-sound-toggle').style.opacity = isSoundEnabled ? '1' : '0.5';
+    };
+
+    // Liveness Watchdog
     setInterval(function () {
-      if (Date.now() - lastPacketTime > 4000) {
-        const pill = $('collar-status');
-        pill.className = 'status-pill status-offline';
-        $('status-text').textContent = 'SEARCHING...';
+      if (Date.now() - lastPacketTimestamp > 4000) {
+        const chip = $('status-chip');
+        chip.className = 'status-chip offline';
+        $('status-text').textContent = 'Searching';
       }
     }, 1000);
   }
 
   document.addEventListener('DOMContentLoaded', function () {
     initMap();
-    initControls();
+    initListeners();
     autoPollCollar();
     setInterval(autoPollCollar, 1000);
   });

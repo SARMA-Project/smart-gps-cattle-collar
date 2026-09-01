@@ -1,104 +1,136 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Smart Cattle GPS Collar</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-<!-- Leaflet Map CSS -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#090d16">
+  <title>CattleGuard Pro • Smart Cattle GPS</title>
+  
+  <!-- Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="mobile-app">
-  <!-- Clean Top Bar -->
-  <header class="top-bar">
-    <div class="brand">
-      <span class="logo-emoji">🐄</span>
-      <div>
-        <h1>Cattle Live Tracker</h1>
-        <p class="subtitle">Smart GPS &amp; Geofence Collar</p>
-      </div>
-    </div>
-    <div class="status-pill status-offline" id="collar-status">
-      <span class="pulse-dot"></span>
-      <span id="status-text">CONNECTING...</span>
-    </div>
-  </header>
 
-  <!-- Real-Time Geofence Alert Card -->
-  <div class="alert-card safe" id="alert-card">
-    <div class="alert-main">
-      <div class="alert-icon" id="alert-icon">🟢</div>
-      <div class="alert-info">
-        <h2 id="alert-title">SAFE: INSIDE PASTURE</h2>
-        <p id="alert-desc">Distance from Farmer: <span class="highlight" id="val-dist">0.0 m</span> &bull; Limit: <span id="val-limit">15.0 m</span></p>
-      </div>
-    </div>
-    <div class="alert-options">
-      <label class="sound-switch">
-        <input type="checkbox" id="chk-sound" checked>
-        <span>🔊 Alarm</span>
-      </label>
-    </div>
-  </div>
-
-  <!-- Full Leaflet Map View -->
-  <div class="map-wrapper">
-    <div id="map"></div>
+  <!-- App Viewport Wrapper -->
+  <div class="app-container">
     
-    <!-- Floating Map Controls -->
-    <div class="map-floating-controls">
-      <button id="btn-my-loc" class="btn-float" title="Set Boundary to Phone GPS">
-        📍 Center on My Location
-      </button>
-      <button id="btn-recenter-cow" class="btn-float btn-secondary" title="Center on Cow">
-        🐄 Find Cow
-      </button>
-    </div>
-  </div>
-
-  <!-- Quick Range Controller & Telemetry -->
-  <section class="bottom-panel">
-    <div class="control-row">
-      <div class="range-selector">
-        <label for="range-input">🛡️ Boundary Range:</label>
-        <div class="input-unit">
-          <input type="number" id="range-input" value="15" min="5" max="500" step="1">
-          <span>meters</span>
+    <!-- Top Floating Glass Navigation -->
+    <header class="glass-header">
+      <div class="brand-group">
+        <div class="avatar-ring">
+          <span class="cow-avatar">🐄</span>
+        </div>
+        <div class="brand-text">
+          <div class="title-row">
+            <h1>CattleGuard<span class="pro-tag">PRO</span></h1>
+          </div>
+          <p class="collar-id">NodeMCU Collar #1 &bull; Herd Alpha</p>
         </div>
       </div>
-      <a id="btn-gmaps" href="#" target="_blank" class="btn-gmaps">
-        ↗ Google Maps
-      </a>
-    </div>
 
-    <!-- Minimal Clean Telemetry (No Signal Strength) -->
-    <div class="telemetry-row">
-      <div class="metric">
-        <span class="m-label">LATITUDE</span>
-        <span class="m-val mono" id="t-lat">--</span>
+      <div class="header-actions">
+        <div class="status-chip offline" id="status-chip">
+          <span class="dot"></span>
+          <span class="status-label" id="status-text">Connecting</span>
+        </div>
+        <button class="icon-btn" id="btn-sound-toggle" title="Toggle Alarm Sound">
+          <span id="sound-icon">🔔</span>
+        </button>
       </div>
-      <div class="metric">
-        <span class="m-label">LONGITUDE</span>
-        <span class="m-val mono" id="t-lng">--</span>
-      </div>
-      <div class="metric">
-        <span class="m-label">SPEED</span>
-        <span class="m-val mono" id="t-spd">0.0 km/h</span>
-      </div>
-      <div class="metric">
-        <span class="m-label">COLLAR POSITION</span>
-        <span class="m-val mono" id="t-fix">TRACKING</span>
-      </div>
-    </div>
-  </section>
-</div>
+    </header>
 
-<!-- Leaflet Map JS -->
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js"></script>
+    <!-- Edge-to-Edge Map Canvas -->
+    <main class="map-viewport">
+      <div id="map"></div>
+      
+      <!-- Floating Map Quick Action Pills -->
+      <div class="map-overlay-controls">
+        <button class="map-btn map-btn-active" id="btn-layer-toggle" title="Toggle Satellite / Street Map">
+          🛰️ <span>Satellite</span>
+        </button>
+        <button class="map-btn" id="btn-sync-phone" title="Center on Phone Location">
+          📍 <span>My Location</span>
+        </button>
+        <button class="map-btn" id="btn-lock-cow" title="Focus on Cow">
+          🐄 <span>Find Cow</span>
+        </button>
+      </div>
+    </main>
+
+    <!-- Floating Dynamic Bottom Sheet -->
+    <section class="bottom-sheet">
+      <div class="sheet-handle"></div>
+
+      <!-- Live Geofence Status Card -->
+      <div class="geofence-banner safe" id="geofence-banner">
+        <div class="banner-icon-wrap" id="banner-icon-wrap">
+          <span id="banner-icon">🟢</span>
+        </div>
+        <div class="banner-body">
+          <div class="banner-header">
+            <span class="banner-title" id="banner-title">SAFE IN PASTURE</span>
+            <span class="badge-distance" id="badge-distance">0.0 m</span>
+          </div>
+          <p class="banner-desc" id="banner-desc">Collar is inside your 15m safe perimeter</p>
+        </div>
+      </div>
+
+      <!-- Interactive Perimeter Slider & Config -->
+      <div class="radius-card">
+        <div class="radius-header">
+          <span class="radius-label">🛡️ Safe Pasture Boundary</span>
+          <span class="radius-val" id="radius-display">15 meters</span>
+        </div>
+        <div class="slider-wrapper">
+          <input type="range" id="radius-slider" min="5" max="100" value="15" step="1">
+          <div class="slider-ticks">
+            <span>5m</span>
+            <span>15m (Def)</span>
+            <span>50m</span>
+            <span>100m</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Telemetry Glass Matrix -->
+      <div class="telemetry-grid">
+        <div class="telemetry-card">
+          <span class="t-label">LATITUDE</span>
+          <span class="t-value" id="val-lat">--.------</span>
+        </div>
+        <div class="telemetry-card">
+          <span class="t-label">LONGITUDE</span>
+          <span class="t-value" id="val-lng">--.------</span>
+        </div>
+        <div class="telemetry-card">
+          <span class="t-label">CURRENT SPEED</span>
+          <span class="t-value" id="val-speed">0.0 km/h</span>
+        </div>
+        <div class="telemetry-card">
+          <span class="t-label">COLLAR STATUS</span>
+          <span class="t-value highlight" id="val-status">ACTIVE</span>
+        </div>
+      </div>
+
+      <!-- Quick External Link -->
+      <div class="sheet-footer">
+        <a id="link-gmaps" href="#" target="_blank" class="btn-gmaps">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+          Open in Google Maps
+        </a>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
-
