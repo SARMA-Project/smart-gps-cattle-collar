@@ -128,7 +128,8 @@ bool hasValidGpsFix() {
 void handleApiGps() {
   bool gpsValid = hasValidGpsFix();
   int rssi      = WiFi.RSSI();
-  float rawDist = calculateCalibratedRssiDistance(rssi);
+  int medRssi   = getMedianRssi(rssi);
+  float rawDist = rssiToDistance(medRssi);
   float dist    = getSmoothedDistance(rawDist);
   int sats      = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
 
@@ -311,9 +312,10 @@ void loop() {
   unsigned long now = millis();
   if (now - lastDiagTime >= 2500) {
     lastDiagTime = now;
-    int rssi = WiFi.RSSI();
-    float rawDist = calculateCalibratedRssiDistance(rssi);
-    float dist = getSmoothedDistance(rawDist);
+    int rssi      = WiFi.RSSI();
+    int medRssi   = getMedianRssi(rssi);
+    float rawDist = rssiToDistance(medRssi);
+    float dist    = getSmoothedDistance(rawDist);
     bool gpsValid = hasValidGpsFix();
 
     Serial.println("-------------------- [COLLAR TELEMETRY] --------------------");
