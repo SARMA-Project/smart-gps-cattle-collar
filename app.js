@@ -11,8 +11,6 @@
   let farmerMarker = null;
   let cowMarker    = null;
   let pastureCircle = null;
-  let breadcrumbTrail = null;
-  let trailHistory = [];
 
   let farmerLat = 11.016842, farmerLng = 76.955819;
   let cowLat    = 11.016842, cowLng    = 76.955819;
@@ -59,8 +57,6 @@
       color: '#10b981', fillColor: '#10b981',
       fillOpacity: 0.18, weight: 2, dashArray: '6,6'
     }).addTo(map);
-
-    breadcrumbTrail = L.polyline([], { color:'#06b6d4', weight:3, opacity:0.85 }).addTo(map);
 
     setTimeout(() => { if (map) map.invalidateSize(); }, 400);
     requestPhoneGps();
@@ -200,11 +196,6 @@
       const el = document.getElementById('marker-cow');
       if (el) el.classList.remove('offline-marker');
     }
-
-    // Update trail
-    trailHistory.push([cowLat, cowLng]);
-    if (trailHistory.length > 200) trailHistory.shift();
-    if (breadcrumbTrail) breadcrumbTrail.setLatLngs(trailHistory);
 
     // Update live GPS coordinates and stats in real-time
     $('val-lat').textContent   = cowLat.toFixed(5) + '°';
