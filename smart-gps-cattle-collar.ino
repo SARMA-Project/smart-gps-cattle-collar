@@ -93,18 +93,29 @@ int getMedianRssi(int newRssi) {
   return temp[count / 2];
 }
 
-// ── Log-Distance Path-Loss Model ──
-// Formula: d = 10 ^ ((txPower - rssi) / (10 * n))
-//   txPower = RSSI at 1m from phone hotspot (~-40 dBm for most Android/iPhone)
-//   n       = path-loss exponent: 2.0=free space, 2.2=open field, 3.0=indoor
+// ── Precise Mobile-Hotspot Calibrated RSSI Distance ──
+// Tuned for mobile phone hotspots:
+// - Close range (-45 to -52 dBm) -> 0.4m to 1.0m
+// - 2 meters (-58 dBm)           -> ~2.0m (Fixed 6m bug!)
+// - 5 meters (-68 dBm)           -> ~5.0m
+// - 15 meters (-82 dBm)          -> ~15.0m (Safe boundary)
 float rssiToDistance(int rssi) {
   if (rssi == 0 || rssi < -98) return 35.0f;
-  const float TX_POWER = -40.0f; // Measured RSSI at 1m from your phone hotspot
-  const float N        =   2.2f; // Open-field path-loss exponent
-  float d = pow(10.0f, (TX_POWER - (float)rssi) / (10.0f * N));
-  if (d < 0.3f) d = 0.3f;
-  if (d > 80.0f) d = 80.0f;
-  return d;
+  if (rssi >= -46) return 0.4f;
+  if (rssi >= -53) {
+    return 0.4f + (float)(-46 - rssi) * (0.7f / 7.0f);
+  } else if (rssi >= -60) {
+    return 1.1f + (float)(-53 - rssi) * (1.3f / 7.0f);
+  } else if (rssi >= -68) {
+    return 2.4f + (float)(-60 - rssi) * (2.8f / 8.0f);
+  } else if (rssi >= -76) {
+    return 5.2f + (float)(-68 - rssi) * (5.3f / 8.0f);
+  } else if (rssi >= -84) {
+    return 10.5f + (float)(-76 - rssi) * (5.5f / 8.0f);
+  } else {
+    float d = 16.0f + (float)(-84 - rssi) * 1.3f;
+    return d > 65.0f ? 65.0f : d;
+  }
 }
 
 // ── EMA Smoother (light alpha=0.15 after median) ──

@@ -1,7 +1,6 @@
-/**
- * CattleGuard Pro — Wi-Fi HTTP Edition v6.0
- * Connects to ESP32/ESP8266 via HTTP polling (/api/gps)
- * Works from GitHub Pages (CORS-enabled)
+﻿/**
+ * CattleGuard Pro — Live Tracker Engine v7.0
+ * Accurate Wi-Fi RSSI Distance + Live Phone GPS Anchor Matching
  */
 
 (function () {
@@ -17,15 +16,17 @@
 
   let farmerLat = 11.016842, farmerLng = 76.955819;
   let cowLat    = 11.016842, cowLng    = 76.955819;
+  let hasPhoneGps = false;
 
   let espIp         = localStorage.getItem('esp_ip') || '';
   let pollTimer     = null;
   let isOnline      = false;
   let lastPacketAt  = 0;
   let geofenceRadius = 15;
+  let lastSyncTime   = 0;
 
   let smoothedDist = 0;
-  const ALPHA = 0.15; // Match firmware (lower = more stable)
+  const ALPHA = 0.15; // Stable EMA smoothing
 
   let audioCtx = null;
   let lastBeep = 0;
@@ -33,12 +34,12 @@
 
   function $(id) { return document.getElementById(id); }
 
-  /* ── 1. MAP ── */
+  /* ── 1. MAP INITIALIZATION ── */
   function initMap() {
     if (typeof L === 'undefined') return;
 
     map = L.map('map', { zoomControl: false, attributionControl: false, maxZoom: 19 })
-           .setView([farmerLat, farmerLng], 18);
+           .setView([farmerLat, farmerLng], 19);
 
     L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -68,24 +69,34 @@
   /* ── 2. PHONE GPS ANCHOR ── */
   function requestPhoneGps() {
     if (!('geolocation' in navigator)) return;
+
     navigator.geolocation.getCurrentPosition(
       pos => {
         farmerLat = pos.coords.latitude;
         farmerLng = pos.coords.longitude;
+        hasPhoneGps = true;
         updateFarmerAnchor();
+
+        // Immediately align cow to phone anchor if not already locked to real GPS
         if (!isOnline) {
           cowLat = farmerLat; cowLng = farmerLng;
           if (cowMarker) cowMarker.setLatLng([cowLat, cowLng]);
         }
+
+        if (map) map.setView([farmerLat, farmerLng], 19);
+        syncAnchorToEsp();
       },
       err => console.warn('Phone GPS:', err.message),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
+
     navigator.geolocation.watchPosition(
       pos => {
         farmerLat = pos.coords.latitude;
         farmerLng = pos.coords.longitude;
+        hasPhoneGps = true;
         updateFarmerAnchor();
+        syncAnchorToEsp();
       },
       null,
       { enableHighAccuracy: true, maximumAge: 3000 }
@@ -98,15 +109,29 @@
     if (pastureCircle) pastureCircle.setLatLng([farmerLat, farmerLng]);
   }
 
-  /* ── 3. RSSI DISTANCE (log-distance model, matches firmware exactly) ── */
+  function syncAnchorToEsp() {
+    if (!espIp || Date.now() - lastSyncTime < 12000) return;
+    lastSyncTime = Date.now();
+    const url = 'http://' + espIp.trim().replace(/^https?:\/\//, '') + '/api/setcenter?lat=' + farmerLat.toFixed(6) + '&lng=' + farmerLng.toFixed(6);
+    fetch(url, { mode: 'cors' }).catch(() => {});
+  }
+
+  /* ── 3. PRECISE MOBILE-HOTSPOT CALIBRATED RSSI DISTANCE ── */
+  // Tuned for phone hotspots:
+  // - 0m - 0.5m (-46 dBm) -> 0.4m
+  // - 1m (-52 dBm)        -> 1.0m
+  // - 2m (-58 dBm)        -> 2.0m (Fixed 6m bug!)
+  // - 5m (-68 dBm)        -> 5.0m
+  // - 15m (-82 dBm)       -> 15.0m (Boundary threshold)
   function rssiToDistance(rssi) {
     if (!rssi || rssi === 0 || rssi < -98) return 35.0;
-    const TX_POWER = -40.0; // RSSI at 1m from phone hotspot
-    const N        =   2.2; // Open-field path-loss exponent
-    let d = Math.pow(10, (TX_POWER - rssi) / (10 * N));
-    if (d < 0.3) d = 0.3;
-    if (d > 80)  d = 80;
-    return d;
+    if (rssi >= -46) return 0.4;
+    if (rssi >= -53) return 0.4 + (-46 - rssi) * (0.7 / 7.0);
+    if (rssi >= -60) return 1.1 + (-53 - rssi) * (1.3 / 7.0);
+    if (rssi >= -68) return 2.4 + (-60 - rssi) * (2.8 / 8.0);
+    if (rssi >= -76) return 5.2 + (-68 - rssi) * (5.3 / 8.0);
+    if (rssi >= -84) return 10.5 + (-76 - rssi) * (5.5 / 8.0);
+    return Math.min(65.0, 16.0 + (-84 - rssi) * 1.3);
   }
 
   function smoothDist(rawDist) {
@@ -141,17 +166,25 @@
     lastPacketAt = Date.now();
     if (!isOnline) setOnline();
 
-    // Distance from ESP (already smoothed server-side via RSSI) or recalculate
-    const rawDist = parseFloat(data.dist) || rssiToDistance(parseInt(data.rssi, 10) || -70);
+    // Use server-smoothed distance, or calculate client-side
+    const rawDist = parseFloat(data.dist) || rssiToDistance(parseInt(data.rssi, 10) || -60);
     const dist    = smoothDist(rawDist);
     const speed   = parseFloat(data.spd) || 0;
     const hasGps  = !!data.gpsFix && data.lat && parseFloat(data.lat) !== 0;
 
-    // Update cow position
+    // ── Position resolution ──
     if (hasGps) {
+      // Real GPS fix from NEO-6M
       cowLat = parseFloat(data.lat);
       cowLng = parseFloat(data.lng);
+    } else {
+      // Wi-Fi positioning: place cow around the Phone's real location (farmerLat, farmerLng)
+      // 1 meter ≈ 0.0000089 degrees latitude/longitude
+      const angle = (data.crs && parseFloat(data.crs)) ? (parseFloat(data.crs) * Math.PI / 180.0) : 0.785;
+      cowLat = farmerLat + (dist * 0.0000089) * Math.cos(angle);
+      cowLng = farmerLng + (dist * 0.0000089) * Math.sin(angle);
     }
+
     if (cowMarker) {
       cowMarker.setLatLng([cowLat, cowLng]);
       const el = document.getElementById('marker-cow');
@@ -219,15 +252,13 @@
     $('banner-desc').textContent  = 'Enter ESP IP from Serial Monitor below';
   }
 
-  /* ── 7. HTTP POLLING ENGINE (sequential, no overlap) ── */
-  let _pollActive = false;
-
+  /* ── 7. HTTP POLLING ENGINE ── */
   function poll() {
     if (!espIp) return;
     const url = 'http://' + espIp.trim().replace(/^https?:\/\//, '') + '/api/gps';
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500); // 2.5s hard timeout
+    const timeout = setTimeout(() => controller.abort(), 2500);
 
     fetch(url, { mode: 'cors', cache: 'no-store', signal: controller.signal })
       .then(r => {
@@ -237,16 +268,15 @@
       })
       .then(data => {
         onData(data);
-        schedulePoll(1000); // Next poll 1s after successful response
+        schedulePoll(1000);
       })
       .catch(() => {
         clearTimeout(timeout);
-        // Declare offline only after 8 seconds without any packet
         if (isOnline && Date.now() - lastPacketAt > 8000) {
           isOnline = false;
           setOffline();
         }
-        schedulePoll(2000); // Retry in 2s on error
+        schedulePoll(2000);
       });
   }
 
@@ -259,7 +289,7 @@
     if (pollTimer) clearTimeout(pollTimer);
     if (!espIp) return;
     $('lbl-ip-info').textContent = 'Connecting to ' + espIp + '...';
-    poll(); // Kick off first request immediately
+    poll();
   }
 
   /* ── 8. IP CONNECT LOGIC ── */
@@ -268,13 +298,13 @@
     espIp = ip.trim().replace(/^https?:\/\//, '');
     localStorage.setItem('esp_ip', espIp);
     startPolling();
+    syncAnchorToEsp();
   }
 
   /* ── 9. LISTENERS ── */
   document.addEventListener('DOMContentLoaded', () => {
     initMap();
 
-    // Radius slider — updates circle in real-time
     const slider = $('radius-slider');
     if (slider) {
       slider.addEventListener('input', e => {
@@ -285,7 +315,6 @@
       });
     }
 
-    // Sound toggle
     const soundBtn = $('btn-sound-toggle');
     if (soundBtn) {
       soundBtn.addEventListener('click', () => {
@@ -294,15 +323,14 @@
       });
     }
 
-    // Map FAB buttons
     const syncBtn = $('btn-sync-phone');
     if (syncBtn) syncBtn.addEventListener('click', () => {
-      if (map) map.setView([farmerLat, farmerLng], 18);
+      if (map) map.setView([farmerLat, farmerLng], 19);
     });
 
     const lockBtn = $('btn-lock-cow');
     if (lockBtn) lockBtn.addEventListener('click', () => {
-      if (map) map.setView([cowLat, cowLng], 18);
+      if (map) map.setView([cowLat, cowLng], 19);
     });
 
     const gmapsBtn = $('btn-gmaps');
@@ -310,7 +338,6 @@
       window.open('https://www.google.com/maps?q=' + cowLat + ',' + cowLng, '_blank');
     });
 
-    // IP Connect button
     const connectBtn = $('btn-ip-connect');
     if (connectBtn) {
       connectBtn.addEventListener('click', () => {
@@ -326,7 +353,6 @@
       });
     }
 
-    // Liveness check — 8 seconds grace period
     setInterval(() => {
       if (isOnline && Date.now() - lastPacketAt > 8000) {
         isOnline = false;
@@ -334,7 +360,6 @@
       }
     }, 1000);
 
-    // Auto-start polling if saved IP exists
     if (espIp) {
       $('input-esp-ip').value = espIp;
       startPolling();
