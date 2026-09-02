@@ -1,4 +1,4 @@
-﻿/**
+/**
  * CattleGuard Pro — Live Tracker Engine v7.0
  * Accurate Wi-Fi RSSI Distance + Live Phone GPS Anchor Matching
  */
@@ -174,15 +174,25 @@
 
     // ── Position resolution ──
     if (hasGps) {
-      // Real GPS fix from NEO-6M
+      // Real GPS satellite fix from NEO-6M
       cowLat = parseFloat(data.lat);
       cowLng = parseFloat(data.lng);
     } else {
-      // Wi-Fi positioning: place cow around the Phone's real location (farmerLat, farmerLng)
-      // 1 meter ≈ 0.0000089 degrees latitude/longitude
-      const angle = (data.crs && parseFloat(data.crs)) ? (parseFloat(data.crs) * Math.PI / 180.0) : 0.785;
-      cowLat = farmerLat + (dist * 0.0000089) * Math.cos(angle);
-      cowLng = farmerLng + (dist * 0.0000089) * Math.sin(angle);
+      // Wi-Fi positioning: place cow relative to phone pin (farmerLat, farmerLng)
+      // Exactly matches the pasture distance meter reading:
+      if (dist <= 0.8) {
+        // When device and phone are together (0 - 0.8m), align cow directly with the pin
+        cowLat = farmerLat;
+        cowLng = farmerLng;
+      } else {
+        // 1 meter ≈ 0.00000899 degrees lat/lng
+        // Offset cow by the exact distance in meters from the phone pin
+        const angle = (data.crs !== undefined && data.crs !== null && !isNaN(parseFloat(data.crs)))
+                      ? (parseFloat(data.crs) * Math.PI / 180.0)
+                      : 0.785;
+        cowLat = farmerLat + (dist * 0.00000899) * Math.cos(angle);
+        cowLng = farmerLng + (dist * 0.00000899) * Math.sin(angle);
+      }
     }
 
     if (cowMarker) {
@@ -196,7 +206,7 @@
     if (trailHistory.length > 200) trailHistory.shift();
     if (breadcrumbTrail) breadcrumbTrail.setLatLngs(trailHistory);
 
-    // Update stats
+    // Update live GPS coordinates and stats in real-time
     $('val-lat').textContent   = cowLat.toFixed(5) + '°';
     $('val-lng').textContent   = cowLng.toFixed(5) + '°';
     $('val-speed').textContent = speed.toFixed(1) + ' km/h';
